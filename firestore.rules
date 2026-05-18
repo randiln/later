@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function existingData() { return resource.data; }
+    function incomingData() { return request.resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    
+    function getGallery(galleryId) {
+      return get(/databases/$(database)/documents/galleries/$(galleryId)).data;
+    }
+
+    // --- Users ---
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId 
+        && incomingData().keys().hasAll(['email', 'createdAt'])
+        && incomingData().keys().size() == 2
+        && incomingData().email == request.auth.token.email;
+    }
+
+    // --- Galleries ---
+    match /galleries/{galleryId} {
+      function isValidGallery(data) {
+        return data.title is string && data.title.size() > 0 && data.title.size() <= 100
+          && (data.get('description', '') is string && data.get('description', '').size() <= 500)
+          && data.startsAt is timestamp
+          && data.revealAt is timestamp
+          && data.maxShots is int && data.maxShots > 0 && data.maxShots <= 100
+          && data.maxContributors is int && data.maxContributors > 0 && data.maxContributors <= 500
+          && data.creatorId == request.auth.uid
+          && data.createdAt == request.time;
+      }
+
+      allow read: if true; 
+      allow list: if isSignedIn() && resource.data.creatorId == request.auth.uid;
+      allow create: if isVerified() && isValidGallery(incomingData());
+      allow update: if isVerified() && existingData().creatorId == request.auth.uid && isValidGallery(incomingData());
+      allow delete: if isVerified() && existingData().creatorId == request.auth.uid;
+
+      // --- Contributors ---
+      match /contributors/{contributorId} {
+        function isValidContributor(data) {
+          return data.galleryId == galleryId
+            && data.nickname is string && data.nickname.size() > 0 && data.nickname.size() <= 20
+            && data.sessionId is string
+            && data.shotsTaken is int && data.shotsTaken >= 0
+            && data.createdAt is timestamp;
+        }
+
+        allow read: if true; 
+        allow create: if isValidContributor(incomingData()) 
+          && incomingData().shotsTaken == 0
+          && incomingData().createdAt == request.time;
+        allow update: if isValidContributor(incomingData())
+          && incomingData().sessionId == existingData().sessionId
+          && incomingData().createdAt == existingData().createdAt
+          && (
+            // Action: Increment shot count
+            (incomingData().shotsTaken == existingData().shotsTaken + 1 
+             && incomingData().diff(existingData()).affectedKeys().hasOnly(['shotsTaken']))
+          );
+      }
+
+      // --- Photos ---
+      match /photos/{photoId} {
+        function isRevealed() {
+          return getGallery(galleryId).revealAt <= request.time;
+        }
+        function hasStarted() {
+          return getGallery(galleryId).startsAt <= request.time;
+        }
+
+        allow read: if isRevealed();
+        allow create: if hasStarted()
+          && !isRevealed()
+          && incomingData().galleryId == galleryId
+          && incomingData().contributorId is string
+          && incomingData().imageUrl is string
+          && incomingData().imageUrl.size() <= 900000
+          && incomingData().createdAt == request.time
+          // Validate contributor exists and has shots left
+          && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;
+      }
+    }
+  }
+}
