@@ -93,14 +93,14 @@ export default function Capture() {
     setError(null);
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    
+
     // With Supabase Storage we're no longer bound by Firestore's 1MB doc limit,
     // so we can use higher quality and larger dimensions.
     const MAX_DIM = 1200;
-    
+
     let width = video.videoWidth || 640;
     let height = video.videoHeight || 480;
-    
+
     if (width > MAX_DIM || height > MAX_DIM) {
       if (width > height) {
         height = Math.round((height * MAX_DIM) / width);
@@ -113,7 +113,7 @@ export default function Capture() {
 
     canvas.width = width;
     canvas.height = height;
-    
+
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       setCapturing(false);
@@ -142,7 +142,7 @@ export default function Capture() {
     setTimeout(async () => {
       try {
         setPreview(null);
-        
+
         // Upload to Supabase Storage and get the public URL
         const imageUrl = await uploadPhoto(blob, id!, contributor.id);
 
@@ -188,14 +188,14 @@ export default function Capture() {
             </p>
           </div>
           <div className="py-8 w-full border-y border-white/5">
-             <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-4">Reveal Countdown</p>
-             <p className="text-5xl font-serif italic text-accent tracking-tight">
-               {formatDistanceToNow(gallery.revealAt.toDate())}
-             </p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-4">Reveal Countdown</p>
+            <p className="text-5xl font-serif italic text-accent tracking-tight">
+              {formatDistanceToNow(gallery.revealAt.toDate())}
+            </p>
           </div>
 
           <p className="text-xs text-zinc-800 font-bold uppercase tracking-widest">
-             See you on the other side.
+            See you on the other side.
           </p>
         </div>
       </PageWrapper>
@@ -216,15 +216,15 @@ export default function Capture() {
         {/* Camera access error - full screen */}
         {error && !stream ? (
           <div className="p-10 text-center space-y-4">
-             <p className="text-text-muted">{error}</p>
-             <button onClick={() => { setError(null); startCamera(); }} className="px-6 py-3 bg-white text-black rounded-full font-bold">Try Again</button>
+            <p className="text-text-muted">{error}</p>
+            <button onClick={() => { setError(null); startCamera(); }} className="px-6 py-3 bg-white text-black rounded-full font-bold">Try Again</button>
           </div>
         ) : (
-          <video 
-            ref={videoRef} 
-            autoPlay 
-            playsInline 
-            muted 
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
             className="w-full h-full object-cover"
           />
         )}
@@ -248,22 +248,22 @@ export default function Capture() {
               className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-md"
             >
               {preview && (
-                <motion.div 
+                <motion.div
                   initial={{ scale: 0.9, opacity: 0, rotate: -2 }}
                   animate={{ scale: 1, opacity: 1, rotate: 0 }}
                   className="relative p-2 bg-white rounded-lg shadow-2xl"
                 >
                   <img src={preview} className="w-[75vw] aspect-[3/4] object-cover rounded-sm" />
                   <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-black/40 backdrop-blur-md px-2 py-1 rounded-full">
-                     <div className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
-                     <span className="text-[8px] uppercase tracking-widest font-bold text-white/80">Saving</span>
+                    <div className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
+                    <span className="text-[8px] uppercase tracking-widest font-bold text-white/80">Saving</span>
                   </div>
                 </motion.div>
               )}
               {!preview && (
                 <div className="mt-8 flex flex-col items-center">
-                   <div className="w-10 h-10 border-2 border-accent/30 border-t-accent rounded-full animate-spin mb-4" />
-                   <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent italic">Developing...</p>
+                  <div className="w-10 h-10 border-2 border-accent/30 border-t-accent rounded-full animate-spin mb-4" />
+                  <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent italic">Developing...</p>
                 </div>
               )}
             </motion.div>
@@ -276,8 +276,8 @@ export default function Capture() {
             <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
             <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
           </div>
-          
-          <button 
+
+          <button
             onClick={() => navigate(-1)}
             className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center pointer-events-auto active:scale-90 transition-transform"
           >
@@ -291,7 +291,7 @@ export default function Capture() {
       {/* Shutter Bar */}
       <div className="h-[220px] bg-black flex flex-col items-center justify-center relative overflow-hidden">
         <div className="absolute top-0 inset-x-0 h-px bg-white/5" />
-        
+
         <div className="flex flex-col items-center space-y-4">
           <button
             disabled={!!preview || capturing || shotsLeft <= 0}
@@ -309,8 +309,8 @@ export default function Capture() {
 
         {/* Contributor Label */}
         <div className="absolute bottom-6 flex items-center space-x-2">
-           <div className="w-1 h-1 bg-accent rounded-full" />
-           <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-60 italic">Contributor: {contributor.nickname}</p>
+          <div className="w-1 h-1 bg-accent rounded-full" />
+          <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-60 italic">Contributor: {contributor.nickname}</p>
         </div>
       </div>
     </div>

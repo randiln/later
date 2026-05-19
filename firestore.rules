@@ -84,8 +84,12 @@ service cloud.firestore {
           && incomingData().galleryId == galleryId
           && incomingData().contributorId is string
           && incomingData().imageUrl is string
+<<<<<<< HEAD
           && incomingData().imageUrl.size() > 0
           && incomingData().imageUrl.size() <= 2048
+=======
+          && incomingData().imageUrl.size() <= 900000
+>>>>>>> 8124df5e668c9188475ae919b2e25297db3fe2cc
           && incomingData().createdAt == request.time
           // Validate contributor exists and has shots left
           && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;

@@ -7,7 +7,6 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',

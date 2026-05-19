@@ -1,20 +1,26 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+## What is Later?
 
-# Run and deploy your AI Studio app
+**Later** is a shared, time-locked disposable camera for events. Think weddings, birthday parties, concerts — any moment worth capturing from every angle.
 
-This contains everything you need to run your app locally.
+The concept is simple:
 
-View your app in AI Studio: https://ai.studio/apps/59734967-0ce2-40a7-99cb-de1f1d2db8bc
+1. An **event creator** sets up a gallery with a start time and a reveal time.
+2. **Guests** scan a QR code, enter a nickname, and get access to a shared camera.
+3. Everyone takes photos throughout the event — **but no one can see them yet.**
+4. When the reveal time hits, the vault unlocks and all the memories surface at once.
 
-## Run Locally
+It's the magic of disposable cameras, rebuilt for the group chat era.
 
-**Prerequisites:**  Node.js
+---
 
+## Features
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- 📸 **In-browser camera** — guests capture moments directly from their phone, no app install needed
+- 🔒 **Time-locked vault** — photos are sealed until the reveal timestamp you set
+- 🎟️ **QR code sharing** — one scan gets anyone into the gallery
+- 👥 **Per-guest shot limits** — control how many photos each contributor can take
+- 🎨 **Guest capacity** — cap the number of contributors to keep things intimate
+- ✨ **Reveal gallery** — a beautiful grid view unlocks automatically at reveal time
+- 🙈 **No peeking** — Firestore security rules enforce the vault server-side, not just client-side
+
+---
