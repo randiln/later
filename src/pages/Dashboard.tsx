@@ -13,6 +13,7 @@ export default function Dashboard() {
   const [upcoming, setUpcoming] = useState<Gallery[]>([]);
   const [past, setPast] = useState<Gallery[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -33,8 +34,11 @@ export default function Dashboard() {
       setUpcoming(all.filter(g => !isPast(g.revealAt.toDate())));
       setPast(all.filter(g => isPast(g.revealAt.toDate())));
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, "galleries");
+      setError(null);
+    }, (err) => {
+      console.error("Dashboard query failed:", err);
+      setError("Failed to load galleries. Check the console for details.");
+      setLoading(false);
     });
 
     return unsubscribe;
@@ -58,6 +62,13 @@ export default function Dashboard() {
       </div>
 
       <div className="space-y-10 flex-1">
+        {/* Error banner */}
+        {error && (
+          <div className="p-4 bg-red-950/90 border border-red-500/30 rounded-2xl">
+            <p className="text-red-300 text-sm">{error}</p>
+          </div>
+        )}
+
         {/* Actions */}
         <button
           onClick={() => navigate("/create")}
