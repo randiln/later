@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "creator": {
+      "title": "Creator",
+      "description": "User who creates and manages galleries.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "createdAt"]
+    },
+    "gallery": {
+      "title": "Gallery",
+      "description": "A shared disposable camera event.",
+      "type": "object",
+      "properties": {
+        "creatorId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "startsAt": { "type": "string", "format": "date-time" },
+        "revealAt": { "type": "string", "format": "date-time" },
+        "maxShots": { "type": "integer" },
+        "maxContributors": { "type": "integer" },
+        "themeColor": { "type": "string" },
+        "welcomeMessage": { "type": "string" },
+        "coverImageUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["creatorId", "title", "startsAt", "revealAt", "maxShots", "createdAt"]
+    },
+    "contributor": {
+      "title": "Contributor",
+      "description": "A person who joined a gallery to take photos.",
+      "type": "object",
+      "properties": {
+        "galleryId": { "type": "string" },
+        "nickname": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "shotsTaken": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["galleryId", "nickname", "sessionId", "shotsTaken", "createdAt"]
+    },
+    "photo": {
+      "title": "Photo",
+      "description": "A photo taken by a contributor.",
+      "type": "object",
+      "properties": {
+        "galleryId": { "type": "string" },
+        "contributorId": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["galleryId", "contributorId", "imageUrl", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "creator",
+      "description": "Public profile for creators."
+    },
+    "galleries/{galleryId}": {
+      "schema": "gallery",
+      "description": "Event/Gallery details."
+    },
+    "galleries/{galleryId}/contributors/{contributorId}": {
+      "schema": "contributor",
+      "description": "Contributors registered for a specific gallery."
+    },
+    "galleries/{galleryId}/photos/{photoId}": {
+      "schema": "photo",
+      "description": "Photos submitted to a gallery."
+    }
+  }
+}

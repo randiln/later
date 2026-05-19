@@ -1,0 +1,11 @@
+rules_version = '2';
+// Firebase Storage is no longer used.
+// Images are stored in Supabase Storage.
+// This file is kept as a placeholder to prevent deployment errors.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
