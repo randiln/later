@@ -144,6 +144,15 @@ export default function Capture() {
         setPreview(null);
 
         // Upload to Supabase Storage and get the public URL
+        if (!id) {
+          alert("Missing post ID");
+          return;
+        }
+        
+        if (!contributor?.id) {
+          alert("Missing contributor ID");
+          return;
+        }
         const imageUrl = await uploadPhoto(blob, id!, contributor.id);
 
         // Save the Supabase public URL to Firestore
