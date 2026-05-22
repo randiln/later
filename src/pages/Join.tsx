@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, collection, addDoc, query, where, getDocs, Timestamp, serverTimestamp } from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../lib/firebase";
-import { Gallery, Contributor } from "../types";
+import { doc, getDoc, collection, addDoc, getDocs, serverTimestamp } from "firebase/firestore";
+import { db, logFirestoreError, OperationType } from "../lib/firebase";
+import { Gallery } from "../types";
 import PageWrapper from "../components/PageWrapper";
+import Badge from "../components/Badge";
+import Button from "../components/Button";
 import { motion } from "motion/react";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 
 export default function Join() {
@@ -51,7 +53,7 @@ export default function Join() {
         }
         setLoading(false);
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `galleries/${id}`);
+        logFirestoreError(error, OperationType.GET, `galleries/${id}`);
       }
     };
 
@@ -86,7 +88,7 @@ export default function Join() {
       
       navigate(`/capture/${id}`);
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `galleries/${id}/contributors`);
+      logFirestoreError(error, OperationType.WRITE, `galleries/${id}/contributors`);
     } finally {
       setJoining(false);
     }
@@ -104,9 +106,8 @@ export default function Join() {
           <motion.div
             animate={{ opacity: [0.5, 1, 0.5] }}
             transition={{ duration: 3, repeat: Infinity }}
-            className="px-4 py-1.5 bg-accent/10 border border-accent/20 rounded-full"
           >
-            <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent">Locked</span>
+            <Badge label="Locked" />
           </motion.div>
           
           <div className="space-y-4">
@@ -133,9 +134,7 @@ export default function Join() {
       <div className="flex-1 flex flex-col pt-12 space-y-12">
         <div className="space-y-4">
           <div className="flex justify-center">
-            <span className="px-4 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full text-[10px] uppercase tracking-[0.2em] font-bold text-green-500">
-              Live Now
-            </span>
+            <Badge label="Live Now" tone="live" />
           </div>
           <h2 className="text-4xl font-serif italic text-center leading-tight text-white/90">
             Join the camera for<br/> {gallery.title}
@@ -160,13 +159,10 @@ export default function Join() {
              />
           </div>
           
-          <button
-            disabled={!nickname || joining || isFull}
-            className="w-full py-5 bg-white text-black rounded-[2.5rem] font-bold flex items-center justify-center space-x-2 active:scale-[0.98] transition-transform disabled:opacity-50"
-          >
-            <span>{isFull ? "Gallery at Capacity" : "Enter Gallery"}</span>
-            {!isFull && <ArrowRight size={20} />}
-          </button>
+          <Button type="submit" disabled={!nickname || joining || isFull}>
+            <span>{isFull ? "Gallery at Capacity" : joining ? "Entering..." : "Enter Gallery"}</span>
+            {!isFull && !joining && <ArrowRight size={20} />}
+          </Button>
         </form>
       </div>
     </PageWrapper>

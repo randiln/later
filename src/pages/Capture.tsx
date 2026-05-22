@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp } from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../lib/firebase";
+import { doc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { db, logFirestoreError, OperationType } from "../lib/firebase";
 import { uploadPhoto } from "../lib/supabase";
-import { Gallery, Photo, Contributor } from "../types";
+import { Gallery, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
+import Badge from "../components/Badge";
 import { motion, AnimatePresence } from "motion/react";
-import { Camera, RefreshCcw, LogOut, CheckCircle2 } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 
 export default function Capture() {
@@ -22,9 +23,12 @@ export default function Capture() {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     if (!id) return;
+    mountedRef.current = true;
     const contributorId = localStorage.getItem(`contributor_${id}`);
     if (!contributorId) {
       navigate(`/join/${id}`);
@@ -40,7 +44,7 @@ export default function Capture() {
         }
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `galleries/${id}`);
+      logFirestoreError(error, OperationType.GET, `galleries/${id}`);
     });
 
     const unsubC = onSnapshot(doc(db, "galleries", id, "contributors", contributorId), (docSnap) => {
@@ -51,17 +55,25 @@ export default function Capture() {
         navigate(`/join/${id}`);
       }
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, `galleries/${id}/contributors/${contributorId}`);
+      logFirestoreError(error, OperationType.GET, `galleries/${id}/contributors/${contributorId}`);
     });
 
     startCamera();
 
     return () => {
+      mountedRef.current = false;
       unsubG();
       unsubC();
       stopCamera();
     };
   }, [id]);
+
+  // Release the camera once the guest has used all their shots.
+  useEffect(() => {
+    if (gallery && contributor && contributor.shotsTaken >= gallery.maxShots) {
+      stopCamera();
+    }
+  }, [gallery, contributor]);
 
   const startCamera = async () => {
     try {
@@ -69,6 +81,12 @@ export default function Capture() {
         video: { facingMode: "environment" },
         audio: false
       });
+      // Component may have unmounted while getUserMedia was pending.
+      if (!mountedRef.current) {
+        s.getTracks().forEach(track => track.stop());
+        return;
+      }
+      streamRef.current = s;
       setStream(s);
       if (videoRef.current) {
         videoRef.current.srcObject = s;
@@ -80,8 +98,9 @@ export default function Capture() {
   };
 
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     }
   };
 
@@ -140,20 +159,17 @@ export default function Capture() {
 
     // Show 2-second preview then upload
     setTimeout(async () => {
+      if (!mountedRef.current) return;
       try {
         setPreview(null);
 
+        if (!id || !contributor?.id) {
+          setError("Session expired. Please rejoin the gallery.");
+          return;
+        }
+
         // Upload to Supabase Storage and get the public URL
-        if (!id) {
-          alert("Missing post ID");
-          return;
-        }
-        
-        if (!contributor?.id) {
-          alert("Missing contributor ID");
-          return;
-        }
-        const imageUrl = await uploadPhoto(blob, id!, contributor.id);
+        const imageUrl = await uploadPhoto(blob, id, contributor.id);
 
         // Save the Supabase public URL to Firestore
         await addDoc(collection(db, "galleries", id, "photos"), {
@@ -168,13 +184,14 @@ export default function Capture() {
         });
       } catch (error: any) {
         console.error("Save process failed", error);
+        if (!mountedRef.current) return;
         setPreview(null);
         const errorMessage = error?.code === 'permission-denied'
           ? "Permission denied. The gallery may be closed."
           : (error?.message || "Failed to save photo. Please try again.");
         setError(errorMessage);
       } finally {
-        setCapturing(false);
+        if (mountedRef.current) setCapturing(false);
       }
     }, 2000);
   };
@@ -187,9 +204,7 @@ export default function Capture() {
     return (
       <PageWrapper>
         <div className="flex-1 flex flex-col items-center justify-center text-center space-y-10">
-          <div className="px-4 py-1.5 bg-accent/10 border border-accent/20 rounded-full">
-            <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent">Reveal Locked</span>
-          </div>
+          <Badge label="Reveal Locked" />
           <div className="space-y-4">
             <h2 className="text-4xl font-serif italic text-white/90 leading-tight">Your shots are safe in the vault ✨</h2>
             <p className="text-text-muted text-sm max-w-[280px] mx-auto italic leading-relaxed">

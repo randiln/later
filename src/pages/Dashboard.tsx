@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { collection, query, where, getDocs, orderBy, onSnapshot } from "firebase/firestore";
-import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
+import { collection, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { db, auth } from "../lib/firebase";
 import { Gallery } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
-import { Plus, Calendar, Users, Camera, ChevronRight, LogOut } from "lucide-react";
+import { Plus, Calendar, Camera, ChevronRight, LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, isPast } from "date-fns";
 import { motion } from "motion/react";
@@ -159,5 +159,3 @@ function GalleryCard({ gallery, onClick }: { gallery: Gallery; onClick: () => vo
     </motion.button>
   );
 }
-
-// Re-defining cn inside or import it

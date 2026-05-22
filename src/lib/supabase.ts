@@ -3,14 +3,23 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-if (!supabaseUrl || !supabaseAnonKey) {
+/** Whether Supabase Storage is configured. Photo upload requires this. */
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+if (!isSupabaseConfigured) {
   console.warn(
-    "Supabase environment variables are missing. " +
+    "Supabase environment variables are missing. Photo upload will be disabled. " +
     "Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env.local file."
   );
 }
 
-export const supabase = createClient(supabaseUrl || "", supabaseAnonKey || "");
+// createClient throws synchronously on an empty URL, which would crash the
+// entire app at load. Fall back to a valid placeholder so the app still
+// renders; uploadPhoto guards against an unconfigured client below.
+export const supabase = createClient(
+  supabaseUrl || "https://placeholder.supabase.co",
+  supabaseAnonKey || "placeholder-anon-key"
+);
 
 /** The Supabase Storage bucket name used for gallery photos. */
 export const PHOTOS_BUCKET = "gallery-photos";
@@ -25,6 +34,10 @@ export async function uploadPhoto(
   galleryId: string,
   contributorId: string
 ): Promise<string> {
+  if (!isSupabaseConfigured) {
+    throw new Error("Photo storage is not configured. Please contact the event creator.");
+  }
+
   const filename = `${galleryId}/${contributorId}/${Date.now()}.jpg`;
 
   const { error } = await supabase.storage

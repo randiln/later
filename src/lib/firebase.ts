@@ -33,8 +33,8 @@ interface FirestoreErrorInfo {
   }
 }
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
+function buildErrorInfo(error: unknown, operationType: OperationType, path: string | null): FirestoreErrorInfo {
+  return {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
       userId: auth.currentUser?.uid,
@@ -49,7 +49,24 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     },
     operationType,
     path
-  }
+  };
+}
+
+/**
+ * For awaited operations: logs the error and rethrows so the caller's
+ * try/catch can react.
+ */
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo = buildErrorInfo(error, operationType, path);
   console.error('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+/**
+ * For onSnapshot error callbacks: logs the error without throwing, since a
+ * throw inside a listener callback becomes an unhandled rejection.
+ */
+export function logFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = buildErrorInfo(error, operationType, path);
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
