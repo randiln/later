@@ -1,7 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const rawSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string) || "";
+const supabaseAnonKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || "").trim();
+
+// Normalize the project URL. Common copy-paste mistakes break Storage uploads:
+//  - trailing whitespace/newlines
+//  - a trailing slash -> SDK builds ".../co//storage/v1/..." (double slash),
+//    which the API gateway rejects as "invalid path in the specified request url"
+//  - an accidental "/storage/v1" suffix -> path gets doubled
+const supabaseUrl = rawSupabaseUrl
+  .trim()
+  .replace(/\/+$/, "")
+  .replace(/\/storage\/v1$/, "");
 
 /** Whether Supabase Storage is configured. Photo upload requires this. */
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
@@ -53,16 +63,14 @@ export async function uploadPhoto(
     });
 
   if (error) {
-    // Surface everything we know so the real cause is visible in the console.
-    console.error("Supabase upload failed", {
-      bucket: PHOTOS_BUCKET,
-      path: filename,
-      supabaseUrl,
-      objectEndpoint: `${supabaseUrl}/storage/v1/object/${PHOTOS_BUCKET}/${filename}`,
-      error,
-      status: (error as { statusCode?: string }).statusCode,
-    });
-    throw new Error(`Supabase upload failed: ${error.message}`);
+    const status = (error as { statusCode?: string | number }).statusCode;
+    const endpoint = `${supabaseUrl}/storage/v1/object/${PHOTOS_BUCKET}/${filename}`;
+    console.error("Supabase upload failed", { endpoint, status, error });
+    // Include diagnostics in the message so they appear in the on-screen
+    // error toast (useful when no dev tools are available, e.g. mobile).
+    throw new Error(
+      `Upload failed [${status ?? "?"}]: ${error.message} — project URL: "${supabaseUrl}"`
+    );
   }
 
   const { data } = supabase.storage
