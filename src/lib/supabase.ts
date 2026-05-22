@@ -1,17 +1,19 @@
 import { createClient } from "@supabase/supabase-js";
 
-const rawSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string) || "";
+const rawSupabaseUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || "").trim();
 const supabaseAnonKey = ((import.meta.env.VITE_SUPABASE_ANON_KEY as string) || "").trim();
 
-// Normalize the project URL. Common copy-paste mistakes break Storage uploads:
-//  - trailing whitespace/newlines
-//  - a trailing slash -> SDK builds ".../co//storage/v1/..." (double slash),
-//    which the API gateway rejects as "invalid path in the specified request url"
-//  - an accidental "/storage/v1" suffix -> path gets doubled
-const supabaseUrl = rawSupabaseUrl
-  .trim()
-  .replace(/\/+$/, "")
-  .replace(/\/storage\/v1$/, "");
+// A Supabase project URL is always just the origin (https://<ref>.supabase.co).
+// Users often paste a full API path like ".../rest/v1" or ".../storage/v1" by
+// mistake; the SDK then builds malformed request URLs that the API gateway
+// rejects with "invalid path specified in request URL". Reduce to the origin
+// so any appended path, trailing slash, or whitespace is dropped.
+let supabaseUrl = "";
+try {
+  supabaseUrl = rawSupabaseUrl ? new URL(rawSupabaseUrl).origin : "";
+} catch {
+  console.warn(`VITE_SUPABASE_URL is not a valid URL: "${rawSupabaseUrl}"`);
+}
 
 /** Whether Supabase Storage is configured. Photo upload requires this. */
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
