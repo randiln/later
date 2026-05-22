@@ -40,9 +40,15 @@ export async function uploadPhoto(
 
   const filename = `${galleryId}/${contributorId}/${Date.now()}.jpg`;
 
+  // Convert Blob → ArrayBuffer so the SDK uses the raw-binary upload path
+  // (Content-Type: image/jpeg header) instead of multipart FormData.
+  // In storage-js 2.x, Blob uploads use formData.append('', blob) — the
+  // empty field name confuses some server versions and triggers "invalid path".
+  const arrayBuffer = await blob.arrayBuffer();
+
   const { error } = await supabase.storage
     .from(PHOTOS_BUCKET)
-    .upload(filename, blob, {
+    .upload(filename, arrayBuffer, {
       contentType: "image/jpeg",
       cacheControl: "3600",
       upsert: false,
