@@ -42,8 +42,6 @@ export async function uploadPhoto(
 
   // Convert Blob → ArrayBuffer so the SDK uses the raw-binary upload path
   // (Content-Type: image/jpeg header) instead of multipart FormData.
-  // In storage-js 2.x, Blob uploads use formData.append('', blob) — the
-  // empty field name confuses some server versions and triggers "invalid path".
   const arrayBuffer = await blob.arrayBuffer();
 
   const { error } = await supabase.storage
@@ -55,6 +53,15 @@ export async function uploadPhoto(
     });
 
   if (error) {
+    // Surface everything we know so the real cause is visible in the console.
+    console.error("Supabase upload failed", {
+      bucket: PHOTOS_BUCKET,
+      path: filename,
+      supabaseUrl,
+      objectEndpoint: `${supabaseUrl}/storage/v1/object/${PHOTOS_BUCKET}/${filename}`,
+      error,
+      status: (error as { statusCode?: string }).statusCode,
+    });
     throw new Error(`Supabase upload failed: ${error.message}`);
   }
 
