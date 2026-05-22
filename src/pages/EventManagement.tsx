@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, onSnapshot, collection, query, where, getDocs } from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../lib/firebase";
+import { doc, onSnapshot, collection } from "firebase/firestore";
+import { db, logFirestoreError, OperationType } from "../lib/firebase";
 import { Gallery } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
-import { ArrowLeft, Share2, Copy, Users, Camera, Clock } from "lucide-react";
+import { ArrowLeft, Copy, Camera } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { formatDistanceToNow, isPast } from "date-fns";
+import { isPast } from "date-fns";
 
 export default function EventManagement() {
   const { id } = useParams<{ id: string }>();
@@ -18,7 +18,7 @@ export default function EventManagement() {
 
   useEffect(() => {
     if (!id) return;
-    
+
     // Gallery listener
     const unsubGallery = onSnapshot(doc(db, "galleries", id), (docSnap) => {
       if (docSnap.exists()) {
@@ -26,30 +26,29 @@ export default function EventManagement() {
       } else {
         navigate("/dashboard");
       }
+    }, (error) => {
+      logFirestoreError(error, OperationType.GET, `galleries/${id}`);
     });
 
-    // Stats fetching
-    const fetchStats = async () => {
-      try {
-        const qContributors = query(collection(db, "galleries", id, "contributors"));
-        const snapC = await getDocs(qContributors);
-        
+    // Live stats listener — keeps contributor and photo counts current.
+    const unsubContributors = onSnapshot(
+      collection(db, "galleries", id, "contributors"),
+      (snap) => {
         let totalPhotos = 0;
-        snapC.forEach(doc => {
-          totalPhotos += (doc.data().shotsTaken || 0);
+        snap.forEach(d => {
+          totalPhotos += (d.data().shotsTaken || 0);
         });
-        
-        setStats({
-          contributors: snapC.size,
-          photos: totalPhotos
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `galleries/${id}/stats`);
+        setStats({ contributors: snap.size, photos: totalPhotos });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.LIST, `galleries/${id}/contributors`);
       }
+    );
+
+    return () => {
+      unsubGallery();
+      unsubContributors();
     };
-    
-    fetchStats();
-    return unsubGallery;
   }, [id]);
 
   if (!gallery) return null;

@@ -1,8 +1,9 @@
 import React, { useState } from "react";
 import { addDoc, collection, serverTimestamp, Timestamp } from "firebase/firestore";
-import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
+import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
 import PageWrapper from "../components/PageWrapper";
-import { ArrowLeft, Sparkles, Calendar, Clock, Camera } from "lucide-react";
+import Button from "../components/Button";
+import { ArrowLeft, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 export default function CreateEvent() {
@@ -14,26 +15,45 @@ export default function CreateEvent() {
   const [revealAt, setRevealAt] = useState("");
   const [maxShots, setMaxShots] = useState(12);
   const [maxContributors, setMaxContributors] = useState(24);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!auth.currentUser) return;
 
+    const startDate = new Date(startsAt);
+    const revealDate = new Date(revealAt);
+
+    if (isNaN(startDate.getTime()) || isNaN(revealDate.getTime())) {
+      setError("Please pick valid start and reveal times.");
+      return;
+    }
+    if (revealDate <= startDate) {
+      setError("The reveal time must be after the start time.");
+      return;
+    }
+    if (revealDate <= new Date()) {
+      setError("The reveal time must be in the future.");
+      return;
+    }
+
+    setError(null);
     setLoading(true);
     try {
       await addDoc(collection(db, "galleries"), {
         creatorId: auth.currentUser.uid,
         title,
         description,
-        startsAt: Timestamp.fromDate(new Date(startsAt)),
-        revealAt: Timestamp.fromDate(new Date(revealAt)),
+        startsAt: Timestamp.fromDate(startDate),
+        revealAt: Timestamp.fromDate(revealDate),
         maxShots: Number(maxShots),
         maxContributors: Number(maxContributors),
         createdAt: serverTimestamp(),
       });
       navigate("/dashboard");
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, "galleries");
+    } catch (err) {
+      logFirestoreError(err, OperationType.CREATE, "galleries");
+      setError("Couldn't create the event. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -113,18 +133,20 @@ export default function CreateEvent() {
           />
         </div>
 
-        <div className="pt-8">
-          <button
-            disabled={loading}
-            className="w-full py-5 bg-white text-black rounded-[2.5rem] font-bold active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center space-x-2 shadow-xl shadow-accent/5"
-          >
+        <div className="pt-8 space-y-4">
+          {error && (
+            <div className="p-4 bg-red-950/90 border border-red-500/30 rounded-2xl">
+              <p className="text-red-300 text-sm">{error}</p>
+            </div>
+          )}
+          <Button type="submit" disabled={loading}>
             {loading ? "Initializing..." : (
               <>
                 <span>Commit Event</span>
                 <Sparkles size={18} />
               </>
             )}
-          </button>
+          </Button>
         </div>
       </form>
     </PageWrapper>

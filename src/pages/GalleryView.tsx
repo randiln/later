@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, collection, query, orderBy, getDocs, onSnapshot } from "firebase/firestore";
-import { db, handleFirestoreError, OperationType } from "../lib/firebase";
+import { db, logFirestoreError, OperationType } from "../lib/firebase";
 import { Gallery, Photo, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
+import Badge from "../components/Badge";
+import LoadingScreen from "../components/LoadingScreen";
 import { motion, AnimatePresence } from "motion/react";
-import { Camera, Calendar, ArrowLeft, Download, Maximize2 } from "lucide-react";
+import { Camera } from "lucide-react";
 import { format } from "date-fns";
 
 export default function GalleryView() {
@@ -54,10 +56,10 @@ export default function GalleryView() {
           setPhotos(pList);
           setLoading(false);
         }, (error) => {
-          handleFirestoreError(error, OperationType.LIST, `galleries/${id}/photos`);
+          logFirestoreError(error, OperationType.LIST, `galleries/${id}/photos`);
         });
       } catch (error) {
-        handleFirestoreError(error, OperationType.GET, `galleries/${id}`);
+        logFirestoreError(error, OperationType.GET, `galleries/${id}`);
       }
     };
 
@@ -68,19 +70,13 @@ export default function GalleryView() {
     };
   }, [id]);
 
-  if (loading || !gallery) return (
-    <div className="min-h-screen bg-[#0a0502] flex items-center justify-center">
-       <p className="font-serif italic animate-pulse">Unlocking memories...</p>
-    </div>
-  );
+  if (loading || !gallery) return <LoadingScreen message="Unlocking memories..." />;
 
   return (
     <PageWrapper>
       <div className="flex flex-col space-y-4 mb-12 text-center">
         <div className="flex justify-center">
-           <span className="px-4 py-1.5 bg-accent/10 border border-accent/20 rounded-full text-[10px] uppercase tracking-[0.2em] font-bold text-accent">
-             Revealed
-           </span>
+           <Badge label="Revealed" />
         </div>
         <div>
           <h2 className="text-5xl font-serif italic text-white/90">{gallery.title}</h2>

@@ -3,6 +3,7 @@ import { User, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
 import { auth } from "../lib/firebase";
 import { useNavigate } from "react-router-dom";
 import PageWrapper from "../components/PageWrapper";
+import Button from "../components/Button";
 import { Camera, ArrowRight, ShieldCheck } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -57,21 +58,15 @@ export default function Home({ user }: { user: User | null }) {
             <p className="text-red-500 text-sm">{errorMsg}</p>
           )}
           {user ? (
-            <button
-              onClick={() => navigate("/dashboard")}
-              className="w-full py-5 bg-zinc-100 text-zinc-950 rounded-2xl font-medium flex items-center justify-center space-x-2 active:scale-[0.98] transition-transform"
-            >
+            <Button onClick={() => navigate("/dashboard")}>
               <span>Manage Events</span>
               <ArrowRight size={18} />
-            </button>
+            </Button>
           ) : (
-            <button
-              onClick={handleLogin}
-              className="w-full py-5 bg-white text-black rounded-2xl font-medium flex items-center justify-center space-x-2 active:scale-[0.98] transition-transform shadow-xl shadow-accent/5"
-            >
+            <Button onClick={handleLogin}>
               <ShieldCheck size={18} />
               <span>Creator Sign In</span>
-            </button>
+            </Button>
           )}
           
           <p className="text-[10px] text-text-muted uppercase tracking-[0.2em] font-bold">

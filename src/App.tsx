@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { auth } from "./lib/firebase";
-import { motion, AnimatePresence } from "motion/react";
+import { AnimatePresence } from "motion/react";
+import LoadingScreen from "./components/LoadingScreen";
 
 // Pages (will create these)
 import Home from "./pages/Home";
@@ -30,17 +31,7 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#0a0502] flex items-center justify-center">
-      <motion.div 
-        animate={{ opacity: [0.4, 1, 0.4] }}
-        transition={{ duration: 2, repeat: Infinity }}
-        className="text-white font-serif italic"
-      >
-        Later...
-      </motion.div>
-    </div>
-  );
+  if (loading) return <LoadingScreen />;
 
   return (
     <BrowserRouter>
@@ -49,23 +40,33 @@ export default function App() {
         <div className="atmosphere" />
 
         <div className="relative z-10 flex flex-col min-h-screen">
-          <AnimatePresence mode="wait">
-            <Routes>
-              {/* Creator Routes */}
-              <Route path="/" element={<Home user={user} />} />
-              <Route path="/dashboard" element={user ? <Dashboard /> : <Navigate to="/" />} />
-              <Route path="/create" element={user ? <CreateEvent /> : <Navigate to="/" />} />
-              <Route path="/event/:id" element={user ? <EventManagement /> : <Navigate to="/" />} />
-              
-              {/* Contributor Routes */}
-              <Route path="/join/:id" element={<Join />} />
-              <Route path="/capture/:id" element={<Capture />} />
-              <Route path="/gallery/:id" element={<GalleryView />} />
-            </Routes>
-          </AnimatePresence>
+          <AnimatedRoutes user={user} />
         </div>
       </div>
     </BrowserRouter>
+  );
+}
+
+function AnimatedRoutes({ user }: { user: User | null }) {
+  const location = useLocation();
+
+  return (
+    <AnimatePresence mode="wait">
+      <div key={location.pathname} className="flex-1 flex flex-col">
+        <Routes location={location}>
+          {/* Creator Routes */}
+          <Route path="/" element={<Home user={user} />} />
+          <Route path="/dashboard" element={user ? <Dashboard /> : <Navigate to="/" />} />
+          <Route path="/create" element={user ? <CreateEvent /> : <Navigate to="/" />} />
+          <Route path="/event/:id" element={user ? <EventManagement /> : <Navigate to="/" />} />
+
+          {/* Contributor Routes */}
+          <Route path="/join/:id" element={<Join />} />
+          <Route path="/capture/:id" element={<Capture />} />
+          <Route path="/gallery/:id" element={<GalleryView />} />
+        </Routes>
+      </div>
+    </AnimatePresence>
   );
 }
 
