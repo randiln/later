@@ -79,3 +79,39 @@ export async function uploadPhoto(
 
   return data.publicUrl;
 }
+
+/**
+ * Delete a photo from Supabase Storage by its public URL.
+ *
+ * Extracts the storage path from URLs like:
+ *   https://<project>.supabase.co/storage/v1/object/public/gallery-photos/<path>
+ *
+ * Logs errors but does not throw — Firestore is the source of truth and
+ * orphaned storage files are acceptable.
+ */
+export async function deletePhoto(imageUrl: string): Promise<void> {
+  if (!isSupabaseConfigured) {
+    console.warn("Supabase not configured — skipping storage deletion.");
+    return;
+  }
+
+  try {
+    const marker = `/object/public/${PHOTOS_BUCKET}/`;
+    const idx = imageUrl.indexOf(marker);
+    if (idx === -1) {
+      console.warn("Could not extract storage path from URL:", imageUrl);
+      return;
+    }
+    const path = decodeURIComponent(imageUrl.slice(idx + marker.length));
+
+    const { error } = await supabase.storage
+      .from(PHOTOS_BUCKET)
+      .remove([path]);
+
+    if (error) {
+      console.error("Supabase delete failed:", error);
+    }
+  } catch (err) {
+    console.error("Supabase delete error:", err);
+  }
+}

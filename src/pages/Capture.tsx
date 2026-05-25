@@ -7,7 +7,7 @@ import { Gallery, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import { motion, AnimatePresence } from "motion/react";
-import { LogOut } from "lucide-react";
+import { LogOut, Zap, ZapOff } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 
 export default function Capture() {
@@ -18,8 +18,11 @@ export default function Capture() {
   const [loading, setLoading] = useState(true);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [previewLandscape, setPreviewLandscape] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [torchOn, setTorchOn] = useState(false);
+  const [hasTorch, setHasTorch] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -91,6 +94,14 @@ export default function Capture() {
       if (videoRef.current) {
         videoRef.current.srcObject = s;
       }
+      // Feature-detect torch / flashlight support
+      try {
+        const track = s.getVideoTracks()[0];
+        const caps = track.getCapabilities?.() as any;
+        setHasTorch(caps?.torch === true);
+      } catch {
+        setHasTorch(false);
+      }
     } catch (err) {
       console.error("Camera access denied", err);
       setError("Please enable camera access to take photos.");
@@ -101,6 +112,19 @@ export default function Capture() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+    }
+    setTorchOn(false);
+  };
+
+  const toggleTorch = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    const next = !torchOn;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: next } as any] });
+      setTorchOn(next);
+    } catch (err) {
+      console.warn("Torch toggle failed", err);
     }
   };
 
@@ -143,6 +167,7 @@ export default function Capture() {
 
     // Generate a preview data URL for the instant polaroid effect
     const previewUrl = canvas.toDataURL("image/jpeg", 0.5);
+    setPreviewLandscape(width > height);
     setPreview(previewUrl);
 
     // Convert canvas to a JPEG blob for Supabase upload
@@ -277,7 +302,7 @@ export default function Capture() {
                   animate={{ scale: 1, opacity: 1, rotate: 0 }}
                   className="relative p-2 bg-white rounded-lg shadow-2xl"
                 >
-                  <img src={preview} className="w-[75vw] aspect-[3/4] object-cover rounded-sm" />
+                  <img src={preview} className={`${previewLandscape ? 'w-[85vw] aspect-[4/3]' : 'w-[75vw] aspect-[3/4]'} object-cover rounded-sm`} />
                   <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-black/40 backdrop-blur-md px-2 py-1 rounded-full">
                     <div className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
                     <span className="text-[8px] uppercase tracking-widest font-bold text-white/80">Saving</span>
@@ -301,12 +326,27 @@ export default function Capture() {
             <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
           </div>
 
-          <button
-            onClick={() => navigate(-1)}
-            className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center pointer-events-auto active:scale-90 transition-transform"
-          >
-            <LogOut size={18} className="text-white/60" />
-          </button>
+          <div className="flex items-center space-x-3 pointer-events-auto">
+            {/* Torch toggle — only shown on supported devices */}
+            {hasTorch && (
+              <button
+                onClick={toggleTorch}
+                className={`w-12 h-12 backdrop-blur-xl rounded-full border flex items-center justify-center active:scale-90 transition-all ${
+                  torchOn
+                    ? 'bg-accent/20 border-accent/40 text-accent'
+                    : 'bg-black/40 border-white/10 text-white/60'
+                }`}
+              >
+                {torchOn ? <Zap size={18} /> : <ZapOff size={18} />}
+              </button>
+            )}
+            <button
+              onClick={() => navigate(-1)}
+              className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
+            >
+              <LogOut size={18} className="text-white/60" />
+            </button>
+          </div>
         </div>
       </div>
 

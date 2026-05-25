@@ -67,6 +67,8 @@ service cloud.firestore {
             (incomingData().shotsTaken == existingData().shotsTaken + 1 
              && incomingData().diff(existingData()).affectedKeys().hasOnly(['shotsTaken']))
           );
+        allow delete: if isSignedIn()
+          && getGallery(galleryId).creatorId == request.auth.uid;
       }
 
       // --- Photos ---
@@ -89,6 +91,8 @@ service cloud.firestore {
           && incomingData().createdAt == request.time
           // Validate contributor exists and has shots left
           && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;
+        allow delete: if isSignedIn()
+          && getGallery(galleryId).creatorId == request.auth.uid;
       }
     }
   }

@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, onSnapshot, collection } from "firebase/firestore";
+import { doc, onSnapshot, collection, deleteDoc, getDocs } from "firebase/firestore";
 import { db, logFirestoreError, OperationType } from "../lib/firebase";
-import { Gallery } from "../types";
+import { deletePhoto as deletePhotoFromStorage } from "../lib/supabase";
+import { Gallery, Contributor } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
-import { ArrowLeft, Copy, Camera } from "lucide-react";
+import { ArrowLeft, Copy, Camera, Trash2, Users } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { isPast } from "date-fns";
 
@@ -14,7 +15,10 @@ export default function EventManagement() {
   const navigate = useNavigate();
   const [gallery, setGallery] = useState<Gallery | null>(null);
   const [stats, setStats] = useState({ contributors: 0, photos: 0 });
+  const [contributorList, setContributorList] = useState<Contributor[]>([]);
   const [copied, setCopied] = useState(false);
+  const [confirmDeleteGallery, setConfirmDeleteGallery] = useState(false);
+  const [deletingGallery, setDeletingGallery] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -30,15 +34,19 @@ export default function EventManagement() {
       logFirestoreError(error, OperationType.GET, `galleries/${id}`);
     });
 
-    // Live stats listener — keeps contributor and photo counts current.
+    // Live stats + contributor list listener
     const unsubContributors = onSnapshot(
       collection(db, "galleries", id, "contributors"),
       (snap) => {
         let totalPhotos = 0;
+        const list: Contributor[] = [];
         snap.forEach(d => {
-          totalPhotos += (d.data().shotsTaken || 0);
+          const data = { id: d.id, ...d.data() } as Contributor;
+          totalPhotos += (data.shotsTaken || 0);
+          list.push(data);
         });
         setStats({ contributors: snap.size, photos: totalPhotos });
+        setContributorList(list.sort((a, b) => b.shotsTaken - a.shotsTaken));
       },
       (error) => {
         logFirestoreError(error, OperationType.LIST, `galleries/${id}/contributors`);
@@ -60,6 +68,41 @@ export default function EventManagement() {
     navigator.clipboard.writeText(joinUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDeleteGallery = async () => {
+    if (!id || deletingGallery) return;
+
+    if (!confirmDeleteGallery) {
+      setConfirmDeleteGallery(true);
+      // Auto-reset after 3 seconds if not confirmed
+      setTimeout(() => setConfirmDeleteGallery(false), 3000);
+      return;
+    }
+
+    setDeletingGallery(true);
+    try {
+      // Delete all photos (Firestore docs + Supabase files)
+      const photosSnap = await getDocs(collection(db, "galleries", id, "photos"));
+      await Promise.all(photosSnap.docs.map(async (photoDoc) => {
+        const imageUrl = photoDoc.data().imageUrl;
+        if (imageUrl) await deletePhotoFromStorage(imageUrl);
+        await deleteDoc(photoDoc.ref);
+      }));
+
+      // Delete all contributors
+      const contribSnap = await getDocs(collection(db, "galleries", id, "contributors"));
+      await Promise.all(contribSnap.docs.map(d => deleteDoc(d.ref)));
+
+      // Delete the gallery doc itself
+      await deleteDoc(doc(db, "galleries", id));
+
+      navigate("/dashboard");
+    } catch (err) {
+      console.error("Gallery deletion failed:", err);
+      setDeletingGallery(false);
+      setConfirmDeleteGallery(false);
+    }
   };
 
   const hasRevealed = isPast(gallery.revealAt.toDate());
@@ -102,6 +145,37 @@ export default function EventManagement() {
           <InfoItem label="Photos Taken" value={`${stats.photos}`} />
           <InfoItem label="Shutter Opens" value={gallery.startsAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} />
         </div>
+
+        {/* Contributors List */}
+        {contributorList.length > 0 && (
+          <section className="space-y-4">
+            <div className="flex items-center space-x-2 text-text-muted text-[10px] uppercase tracking-[0.2em] font-bold p-1">
+              <Users size={14} />
+              <span>Guest List</span>
+            </div>
+            <div className="space-y-2">
+              {contributorList.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex items-center justify-between p-4 bg-card border border-white/5 rounded-2xl"
+                >
+                  <div className="flex items-center space-x-3">
+                    <div className="w-8 h-8 rounded-full bg-accent/10 flex items-center justify-center">
+                      <span className="text-accent font-serif italic text-sm">
+                        {c.nickname.charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                    <span className="text-white/80 font-medium text-sm">{c.nickname}</span>
+                  </div>
+                  <div className="flex items-center space-x-1.5">
+                    <Camera size={12} className="text-text-muted" />
+                    <span className="text-text-muted text-xs font-bold">{c.shotsTaken}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* QR Code Section */}
         <div className="bg-white p-10 rounded-[3rem] flex flex-col items-center justify-center space-y-8 shadow-2xl shadow-accent/10 relative">
@@ -147,6 +221,29 @@ export default function EventManagement() {
            <p className="text-2xl font-serif italic text-accent">
              {gallery.revealAt.toDate().toLocaleDateString()} at {gallery.revealAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
            </p>
+        </div>
+
+        {/* Danger Zone — Delete Gallery */}
+        <div className="pt-8 pb-4 border-t border-white/5">
+          <p className="text-[10px] uppercase tracking-[0.2em] text-red-400/60 font-bold mb-4">Danger Zone</p>
+          <button
+            onClick={handleDeleteGallery}
+            disabled={deletingGallery}
+            className={`w-full py-4 rounded-2xl font-bold text-xs uppercase tracking-[0.15em] flex items-center justify-center space-x-2 active:scale-[0.98] transition-all ${
+              confirmDeleteGallery
+                ? 'bg-red-600 text-white animate-pulse'
+                : 'bg-card border border-red-500/20 text-red-400'
+            } disabled:opacity-50`}
+          >
+            <Trash2 size={16} />
+            <span>
+              {deletingGallery
+                ? "Deleting everything..."
+                : confirmDeleteGallery
+                  ? "Tap again to permanently delete"
+                  : "Delete Gallery"}
+            </span>
+          </button>
         </div>
       </div>
     </PageWrapper>
