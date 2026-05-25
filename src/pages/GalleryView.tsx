@@ -23,10 +23,6 @@ export default function GalleryView() {
   const [deleting, setDeleting] = useState(false);
   const [slideDir, setSlideDir] = useState<1 | -1>(1);
 
-  // Touch tracking for swipe
-  const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
-
   const isCreator = auth.currentUser?.uid === gallery?.creatorId;
   const selectedPhoto = selectedIndex !== null ? photos[selectedIndex] : null;
 
@@ -116,22 +112,6 @@ export default function GalleryView() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [selectedIndex, goNext, goPrev, closeLightbox]);
-
-  // Touch swipe handlers
-  const onTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-    touchStartY.current = e.touches[0].clientY;
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    const dx = e.changedTouches[0].clientX - touchStartX.current;
-    const dy = e.changedTouches[0].clientY - touchStartY.current;
-    // Only trigger if horizontal swipe is dominant and exceeds threshold
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      if (dx < 0) goNext();
-      else goPrev();
-    }
-  };
 
   // Delete photo
   const handleDelete = async () => {
@@ -242,8 +222,6 @@ export default function GalleryView() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-2xl flex flex-col items-center justify-center"
-            onTouchStart={onTouchStart}
-            onTouchEnd={onTouchEnd}
           >
             {/* Close button */}
             <button
@@ -282,11 +260,22 @@ export default function GalleryView() {
             <AnimatePresence mode="wait" initial={false}>
               <motion.div
                 key={selectedPhoto.id}
-                initial={{ opacity: 0, x: slideDir * 200 }}
+                initial={{ opacity: 0, x: slideDir * 320 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: slideDir * -200 }}
-                transition={{ duration: 0.25, ease: "easeInOut" }}
-                className="relative max-w-lg w-full px-6"
+                exit={{ opacity: 0, x: slideDir * -320 }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                drag="x"
+                dragConstraints={{ left: 0, right: 0 }}
+                dragElastic={0.6}
+                onDragEnd={(event, info) => {
+                  const swipeThreshold = 50;
+                  if (info.offset.x < -swipeThreshold) {
+                    goNext();
+                  } else if (info.offset.x > swipeThreshold) {
+                    goPrev();
+                  }
+                }}
+                className="relative max-w-lg w-full px-6 cursor-grab active:cursor-grabbing"
               >
                 <div className="bg-card rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
                   <img

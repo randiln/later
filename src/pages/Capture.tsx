@@ -7,7 +7,7 @@ import { Gallery, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import { motion, AnimatePresence } from "motion/react";
-import { LogOut, Zap, ZapOff } from "lucide-react";
+import { LogOut, Zap, ZapOff, SwitchCamera } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 
 export default function Capture() {
@@ -23,6 +23,9 @@ export default function Capture() {
   const [error, setError] = useState<string | null>(null);
   const [torchOn, setTorchOn] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
+  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
+  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
+  const [flashEffect, setFlashEffect] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -61,7 +64,13 @@ export default function Capture() {
       logFirestoreError(error, OperationType.GET, `galleries/${id}/contributors/${contributorId}`);
     });
 
-    startCamera();
+    // Check for multiple cameras
+    navigator.mediaDevices.enumerateDevices().then(devices => {
+      const videoInputs = devices.filter(d => d.kind === "videoinput");
+      setHasMultipleCameras(videoInputs.length > 1);
+    }).catch(() => {});
+
+    startCamera("environment");
 
     return () => {
       mountedRef.current = false;
@@ -78,10 +87,16 @@ export default function Capture() {
     }
   }, [gallery, contributor]);
 
-  const startCamera = async () => {
+  const startCamera = async (facing: "environment" | "user") => {
+    // Stop existing stream first
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
+        video: { facingMode: facing },
         audio: false
       });
       // Component may have unmounted while getUserMedia was pending.
@@ -94,7 +109,7 @@ export default function Capture() {
       if (videoRef.current) {
         videoRef.current.srcObject = s;
       }
-      // Feature-detect torch / flashlight support
+      // Feature-detect torch / flashlight support (only available on rear camera)
       try {
         const track = s.getVideoTracks()[0];
         const caps = track.getCapabilities?.() as any;
@@ -102,6 +117,7 @@ export default function Capture() {
       } catch {
         setHasTorch(false);
       }
+      setTorchOn(false);
     } catch (err) {
       console.error("Camera access denied", err);
       setError("Please enable camera access to take photos.");
@@ -128,6 +144,38 @@ export default function Capture() {
     }
   };
 
+  const flipCamera = () => {
+    const next = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(next);
+    startCamera(next);
+  };
+
+  /** Fire a brief flash pulse using the device torch. */
+  const fireFlash = async (): Promise<void> => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+
+    try {
+      // Turn torch on
+      await track.applyConstraints({ advanced: [{ torch: true } as any] });
+      // Wait for the flash to illuminate the scene
+      await new Promise(r => setTimeout(r, 150));
+    } catch {
+      // Torch not available — fall through silently
+    }
+  };
+
+  const endFlash = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track) return;
+    // If torch was already on before the shot, leave it on
+    if (!torchOn) {
+      try {
+        await track.applyConstraints({ advanced: [{ torch: false } as any] });
+      } catch {}
+    }
+  };
+
   const takePhoto = async () => {
     if (!videoRef.current || !canvasRef.current || !gallery || !contributor || capturing) return;
     if (contributor.shotsTaken >= gallery.maxShots) return;
@@ -137,25 +185,43 @@ export default function Capture() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    // With Supabase Storage we're no longer bound by Firestore's 1MB doc limit,
-    // so we can use higher quality and larger dimensions.
+    // Fire flash if torch is available (and not already on)
+    const shouldFlash = hasTorch && !torchOn;
+    if (shouldFlash) {
+      await fireFlash();
+    }
+
+    // Show white flash overlay
+    setFlashEffect(true);
+    setTimeout(() => setFlashEffect(false), 150);
+
     const MAX_DIM = 1200;
 
     let width = video.videoWidth || 640;
     let height = video.videoHeight || 480;
 
-    if (width > MAX_DIM || height > MAX_DIM) {
-      if (width > height) {
-        height = Math.round((height * MAX_DIM) / width);
-        width = MAX_DIM;
+    // Detect device orientation — if device is landscape but video is portrait, rotate
+    const orientAngle = (window.screen?.orientation?.angle) ?? 0;
+    const isDeviceLandscape = orientAngle === 90 || orientAngle === 270;
+    const isVideoPortrait = height > width;
+    const shouldRotate = isDeviceLandscape && isVideoPortrait;
+
+    // For rotation, swap the effective dimensions
+    let effectiveW = shouldRotate ? height : width;
+    let effectiveH = shouldRotate ? width : height;
+
+    if (effectiveW > MAX_DIM || effectiveH > MAX_DIM) {
+      if (effectiveW > effectiveH) {
+        effectiveH = Math.round((effectiveH * MAX_DIM) / effectiveW);
+        effectiveW = MAX_DIM;
       } else {
-        width = Math.round((width * MAX_DIM) / height);
-        height = MAX_DIM;
+        effectiveW = Math.round((effectiveW * MAX_DIM) / effectiveH);
+        effectiveH = MAX_DIM;
       }
     }
 
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = effectiveW;
+    canvas.height = effectiveH;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) {
@@ -163,11 +229,24 @@ export default function Capture() {
       return;
     }
 
-    ctx.drawImage(video, 0, 0, width, height);
+    if (shouldRotate) {
+      // Rotate canvas 90° to produce a landscape image
+      const rotDir = orientAngle === 90 ? 1 : -1;
+      ctx.translate(effectiveW / 2, effectiveH / 2);
+      ctx.rotate((rotDir * Math.PI) / 2);
+      ctx.drawImage(video, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
+    } else {
+      ctx.drawImage(video, 0, 0, effectiveW, effectiveH);
+    }
+
+    // Turn off flash after capture
+    if (shouldFlash) {
+      endFlash();
+    }
 
     // Generate a preview data URL for the instant polaroid effect
     const previewUrl = canvas.toDataURL("image/jpeg", 0.5);
-    setPreviewLandscape(width > height);
+    setPreviewLandscape(effectiveW > effectiveH);
     setPreview(previewUrl);
 
     // Convert canvas to a JPEG blob for Supabase upload
@@ -255,6 +334,19 @@ export default function Capture() {
     <div className="fixed inset-0 bg-black z-50 flex flex-col touch-none select-none grainy">
       {/* Viewport */}
       <div className="relative flex-1 overflow-hidden bg-black flex items-center justify-center">
+        {/* Flash white overlay */}
+        <AnimatePresence>
+          {flashEffect && (
+            <motion.div
+              initial={{ opacity: 1 }}
+              animate={{ opacity: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="absolute inset-0 z-50 bg-white pointer-events-none"
+            />
+          )}
+        </AnimatePresence>
+
         {/* Save error toast - shown over camera, dismissable */}
         {error && stream && (
           <div className="absolute top-24 inset-x-4 z-40 bg-red-950/90 backdrop-blur-md border border-red-500/30 rounded-2xl p-4 flex items-start space-x-3">
@@ -266,7 +358,7 @@ export default function Capture() {
         {error && !stream ? (
           <div className="p-10 text-center space-y-4">
             <p className="text-text-muted">{error}</p>
-            <button onClick={() => { setError(null); startCamera(); }} className="px-6 py-3 bg-white text-black rounded-full font-bold">Try Again</button>
+            <button onClick={() => { setError(null); startCamera(facingMode); }} className="px-6 py-3 bg-white text-black rounded-full font-bold">Try Again</button>
           </div>
         ) : (
           <video
@@ -274,7 +366,7 @@ export default function Capture() {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover"
+            className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
           />
         )}
 
@@ -356,19 +448,37 @@ export default function Capture() {
       <div className="h-[220px] bg-black flex flex-col items-center justify-center relative overflow-hidden">
         <div className="absolute top-0 inset-x-0 h-px bg-white/5" />
 
-        <div className="flex flex-col items-center space-y-4">
-          <button
-            disabled={!!preview || capturing || shotsLeft <= 0}
-            onClick={takePhoto}
-            className="group relative w-20 h-20 rounded-full border-[3px] border-white/20 p-1.5 active:scale-95 transition-transform disabled:opacity-10"
-          >
-            <div className="w-full h-full bg-white rounded-full transition-all group-active:scale-90 group-active:bg-accent" />
-            <div className="absolute -inset-4 border border-accent/0 rounded-full group-active:border-accent/40 group-active:scale-110 transition-all duration-500" />
-          </button>
+        <div className="flex items-center justify-center space-x-8">
+          {/* Flip camera button */}
+          {hasMultipleCameras ? (
+            <button
+              onClick={flipCamera}
+              disabled={!!preview || capturing}
+              className="w-14 h-14 bg-white/5 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
+            >
+              <SwitchCamera size={20} className="text-white/60" />
+            </button>
+          ) : (
+            <div className="w-14" /> /* spacer */
+          )}
 
-          <p className="text-[10px] uppercase tracking-[0.3em] text-text-muted font-bold ml-[0.3em]">
-            Capture Moment
-          </p>
+          {/* Shutter button */}
+          <div className="flex flex-col items-center space-y-3">
+            <button
+              disabled={!!preview || capturing || shotsLeft <= 0}
+              onClick={takePhoto}
+              className="group relative w-20 h-20 rounded-full border-[3px] border-white/20 p-1.5 active:scale-95 transition-transform disabled:opacity-10"
+            >
+              <div className="w-full h-full bg-white rounded-full transition-all group-active:scale-90 group-active:bg-accent" />
+              <div className="absolute -inset-4 border border-accent/0 rounded-full group-active:border-accent/40 group-active:scale-110 transition-all duration-500" />
+            </button>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-text-muted font-bold ml-[0.3em]">
+              Capture
+            </p>
+          </div>
+
+          {/* Spacer for symmetry */}
+          <div className="w-14" />
         </div>
 
         {/* Contributor Label */}
