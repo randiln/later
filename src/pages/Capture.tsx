@@ -21,7 +21,7 @@ export default function Capture() {
   const [previewLandscape, setPreviewLandscape] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [torchOn, setTorchOn] = useState(false);
+  const [flashEnabled, setFlashEnabled] = useState(true);
   const [hasTorch, setHasTorch] = useState(false);
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
@@ -117,7 +117,6 @@ export default function Capture() {
       } catch {
         setHasTorch(false);
       }
-      setTorchOn(false);
     } catch (err) {
       console.error("Camera access denied", err);
       setError("Please enable camera access to take photos.");
@@ -129,19 +128,10 @@ export default function Capture() {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
-    setTorchOn(false);
   };
 
-  const toggleTorch = async () => {
-    const track = streamRef.current?.getVideoTracks()[0];
-    if (!track) return;
-    const next = !torchOn;
-    try {
-      await track.applyConstraints({ advanced: [{ torch: next } as any] });
-      setTorchOn(next);
-    } catch (err) {
-      console.warn("Torch toggle failed", err);
-    }
+  const toggleFlash = () => {
+    setFlashEnabled(!flashEnabled);
   };
 
   const flipCamera = () => {
@@ -158,8 +148,8 @@ export default function Capture() {
     try {
       // Turn torch on
       await track.applyConstraints({ advanced: [{ torch: true } as any] });
-      // Wait for the flash to illuminate the scene
-      await new Promise(r => setTimeout(r, 150));
+      // Wait for the flash to illuminate the scene (0.5s longer than 150ms is 650ms)
+      await new Promise(r => setTimeout(r, 650));
     } catch {
       // Torch not available — fall through silently
     }
@@ -168,12 +158,9 @@ export default function Capture() {
   const endFlash = async () => {
     const track = streamRef.current?.getVideoTracks()[0];
     if (!track) return;
-    // If torch was already on before the shot, leave it on
-    if (!torchOn) {
-      try {
-        await track.applyConstraints({ advanced: [{ torch: false } as any] });
-      } catch {}
-    }
+    try {
+      await track.applyConstraints({ advanced: [{ torch: false } as any] });
+    } catch {}
   };
 
   const takePhoto = async () => {
@@ -185,8 +172,8 @@ export default function Capture() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    // Fire flash if torch is available (and not already on)
-    const shouldFlash = hasTorch && !torchOn;
+    // Fire flash if enabled and torch is supported
+    const shouldFlash = hasTorch && flashEnabled;
     if (shouldFlash) {
       await fireFlash();
     }
@@ -419,17 +406,17 @@ export default function Capture() {
           </div>
 
           <div className="flex items-center space-x-3 pointer-events-auto">
-            {/* Torch toggle — only shown on supported devices */}
+            {/* Flash toggle — only shown on supported devices */}
             {hasTorch && (
               <button
-                onClick={toggleTorch}
+                onClick={toggleFlash}
                 className={`w-12 h-12 backdrop-blur-xl rounded-full border flex items-center justify-center active:scale-90 transition-all ${
-                  torchOn
+                  flashEnabled
                     ? 'bg-accent/20 border-accent/40 text-accent'
                     : 'bg-black/40 border-white/10 text-white/60'
                 }`}
               >
-                {torchOn ? <Zap size={18} /> : <ZapOff size={18} />}
+                {flashEnabled ? <Zap size={18} /> : <ZapOff size={18} />}
               </button>
             )}
             <button
