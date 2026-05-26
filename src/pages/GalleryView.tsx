@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, collection, query, orderBy, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
@@ -11,6 +11,255 @@ import { motion, AnimatePresence } from "motion/react";
 import { Camera, ChevronLeft, ChevronRight, Trash2, Download, X } from "lucide-react";
 import { format } from "date-fns";
 
+/* ─────────────────────────── Lightbox Swipe Carousel ─────────────────────────
+ * Architecture: instead of animating individual slides in/out (which fights
+ * with drag gestures), we render a horizontal strip of 3 slides [prev, cur, next]
+ * and translate the whole strip.  While the user's finger is down the strip
+ * follows it 1:1 via a ref-driven CSS transform (no React re-renders → 60 fps).
+ * On release we decide whether to commit the swipe or snap back, apply a CSS
+ * transition, then update React state once the transition ends.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+function LightboxCarousel({
+  photos,
+  contributors,
+  selectedIndex,
+  onChangeIndex,
+  onClose,
+  isCreator,
+  onDelete,
+  confirmDelete,
+  deleting,
+  onDownload,
+}: {
+  photos: Photo[];
+  contributors: Record<string, Contributor>;
+  selectedIndex: number;
+  onChangeIndex: (i: number) => void;
+  onClose: () => void;
+  isCreator: boolean;
+  onDelete: () => void;
+  confirmDelete: boolean;
+  deleting: boolean;
+  onDownload: () => void;
+}) {
+  const stripRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const currentOffset = useRef(0);
+  const isHorizontalSwipe = useRef<boolean | null>(null); // null = undecided
+  const committed = useRef(false); // prevent double-commit
+
+  const SWIPE_THRESHOLD = 60;       // px needed to commit
+  const VELOCITY_THRESHOLD = 0.3;   // px/ms — fast flick commits even if short
+  const startTime = useRef(0);
+
+  // Translate the strip without re-rendering React
+  const setTranslate = (px: number, transition = "none") => {
+    if (!stripRef.current) return;
+    stripRef.current.style.transition = transition;
+    stripRef.current.style.transform = `translateX(${px}px)`;
+  };
+
+  // Reset strip to center (current photo) instantly
+  useEffect(() => {
+    setTranslate(0);
+    committed.current = false;
+  }, [selectedIndex]);
+
+  /* ── pointer / touch handlers ── */
+  const onPointerDown = (e: React.PointerEvent) => {
+    // Ignore if tapping buttons
+    if ((e.target as HTMLElement).closest("button")) return;
+    isDragging.current = true;
+    isHorizontalSwipe.current = null;
+    startX.current = e.clientX;
+    startY.current = e.clientY;
+    startTime.current = Date.now();
+    currentOffset.current = 0;
+    committed.current = false;
+    setTranslate(0);
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!isDragging.current) return;
+    const dx = e.clientX - startX.current;
+    const dy = e.clientY - startY.current;
+
+    // Lock direction on first significant movement
+    if (isHorizontalSwipe.current === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      isHorizontalSwipe.current = Math.abs(dx) >= Math.abs(dy);
+    }
+
+    // If user is scrolling vertically, bail
+    if (isHorizontalSwipe.current === false) return;
+    if (isHorizontalSwipe.current === null) return; // still undecided
+
+    // Rubber-band at edges
+    let clamped = dx;
+    if ((selectedIndex === 0 && dx > 0) || (selectedIndex === photos.length - 1 && dx < 0)) {
+      clamped = dx * 0.25; // rubber-band resistance
+    }
+
+    currentOffset.current = clamped;
+    setTranslate(clamped);
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (!isDragging.current) return;
+    isDragging.current = false;
+
+    if (isHorizontalSwipe.current !== true) {
+      // Was a vertical scroll or a tap — snap back
+      setTranslate(0, "transform 0.25s cubic-bezier(.25,.1,.25,1)");
+      return;
+    }
+
+    const dx = currentOffset.current;
+    const elapsed = Date.now() - startTime.current;
+    const velocity = Math.abs(dx) / Math.max(elapsed, 1);
+    const committedSwipe =
+      Math.abs(dx) > SWIPE_THRESHOLD || velocity > VELOCITY_THRESHOLD;
+
+    if (committed.current) return;
+
+    if (committedSwipe && dx < 0 && selectedIndex < photos.length - 1) {
+      // Swipe left → next
+      committed.current = true;
+      const vw = window.innerWidth;
+      setTranslate(-vw, "transform 0.3s cubic-bezier(.25,.1,.25,1)");
+      setTimeout(() => onChangeIndex(selectedIndex + 1), 300);
+    } else if (committedSwipe && dx > 0 && selectedIndex > 0) {
+      // Swipe right → prev
+      committed.current = true;
+      const vw = window.innerWidth;
+      setTranslate(vw, "transform 0.3s cubic-bezier(.25,.1,.25,1)");
+      setTimeout(() => onChangeIndex(selectedIndex - 1), 300);
+    } else {
+      // Snap back
+      setTranslate(0, "transform 0.3s cubic-bezier(.25,.1,.25,1)");
+    }
+  };
+
+  const prevPhoto = selectedIndex > 0 ? photos[selectedIndex - 1] : null;
+  const currPhoto = photos[selectedIndex];
+  const nextPhoto = selectedIndex < photos.length - 1 ? photos[selectedIndex + 1] : null;
+
+  const renderSlide = (photo: Photo | null, key: string) => {
+    if (!photo) return <div key={key} className="w-full shrink-0" />;
+    return (
+      <div key={key} className="w-full shrink-0 px-6 flex items-center justify-center">
+        <div className="max-w-lg w-full">
+          <div className="bg-card rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
+            <img
+              src={photo.imageUrl}
+              className="w-full max-h-[65vh] object-contain bg-black"
+              draggable={false}
+            />
+            <div className="p-6 bg-gradient-to-t from-card to-card/80">
+              <p className="text-2xl font-serif italic text-accent">
+                {contributors[photo.contributorId]?.nickname || "Guest"}
+              </p>
+              <p className="text-xs text-text-muted mt-1 font-medium uppercase tracking-widest">
+                {format(photo.createdAt.toDate(), "MMMM do, h:mm a")}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-2xl flex flex-col items-center justify-center overflow-hidden touch-none"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        className="absolute top-6 right-6 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
+      >
+        <X size={18} className="text-white/70" />
+      </button>
+
+      {/* Photo counter */}
+      <div className="absolute top-7 left-1/2 -translate-x-1/2 z-10">
+        <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">
+          {selectedIndex + 1} / {photos.length}
+        </p>
+      </div>
+
+      {/* Navigation arrows (desktop) */}
+      {selectedIndex > 0 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onChangeIndex(selectedIndex - 1); }}
+          className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
+        >
+          <ChevronLeft size={20} className="text-white/70" />
+        </button>
+      )}
+      {selectedIndex < photos.length - 1 && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onChangeIndex(selectedIndex + 1); }}
+          className="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
+        >
+          <ChevronRight size={20} className="text-white/70" />
+        </button>
+      )}
+
+      {/* 3-slide strip */}
+      <div className="flex-1 flex items-center w-full overflow-hidden">
+        <div
+          ref={stripRef}
+          className="flex w-full will-change-transform"
+          style={{ transform: "translateX(0px)" }}
+        >
+          {renderSlide(prevPhoto, `prev-${prevPhoto?.id || "empty"}`)}
+          {renderSlide(currPhoto, `curr-${currPhoto.id}`)}
+          {renderSlide(nextPhoto, `next-${nextPhoto?.id || "empty"}`)}
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex items-center space-x-4 py-6">
+        <button
+          onClick={onDownload}
+          className="px-6 py-3 bg-white/10 backdrop-blur-md text-white rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center space-x-2 active:scale-95 transition-transform"
+        >
+          <Download size={14} />
+          <span>Save</span>
+        </button>
+
+        {isCreator && (
+          <button
+            onClick={onDelete}
+            disabled={deleting}
+            className={`px-6 py-3 rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center space-x-2 active:scale-95 transition-all ${
+              confirmDelete
+                ? 'bg-red-600 text-white animate-pulse'
+                : 'bg-white/10 backdrop-blur-md text-red-400'
+            } disabled:opacity-50`}
+          >
+            <Trash2 size={14} />
+            <span>{deleting ? "Deleting..." : confirmDelete ? "Tap to Confirm" : "Delete"}</span>
+          </button>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+/* ─────────────────────────── Main Gallery View ─────────────────────────────── */
+
 export default function GalleryView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -21,7 +270,6 @@ export default function GalleryView() {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [slideDir, setSlideDir] = useState<1 | -1>(1);
 
   const isCreator = auth.currentUser?.uid === gallery?.creatorId;
   const selectedPhoto = selectedIndex !== null ? photos[selectedIndex] : null;
@@ -77,41 +325,24 @@ export default function GalleryView() {
     };
   }, [id]);
 
-  // Navigation
-  const goNext = useCallback(() => {
-    if (selectedIndex === null) return;
-    if (selectedIndex < photos.length - 1) {
-      setSlideDir(1);
-      setSelectedIndex(selectedIndex + 1);
-      setConfirmDelete(false);
-    }
-  }, [selectedIndex, photos.length]);
-
-  const goPrev = useCallback(() => {
-    if (selectedIndex === null) return;
-    if (selectedIndex > 0) {
-      setSlideDir(-1);
-      setSelectedIndex(selectedIndex - 1);
-      setConfirmDelete(false);
-    }
-  }, [selectedIndex]);
-
-  const closeLightbox = useCallback(() => {
-    setSelectedIndex(null);
-    setConfirmDelete(false);
-  }, []);
-
   // Keyboard navigation
   useEffect(() => {
     if (selectedIndex === null) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "ArrowRight") goNext();
-      else if (e.key === "ArrowLeft") goPrev();
-      else if (e.key === "Escape") closeLightbox();
+      if (e.key === "ArrowRight" && selectedIndex < photos.length - 1) {
+        setSelectedIndex(selectedIndex + 1);
+        setConfirmDelete(false);
+      } else if (e.key === "ArrowLeft" && selectedIndex > 0) {
+        setSelectedIndex(selectedIndex - 1);
+        setConfirmDelete(false);
+      } else if (e.key === "Escape") {
+        setSelectedIndex(null);
+        setConfirmDelete(false);
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIndex, goNext, goPrev, closeLightbox]);
+  }, [selectedIndex, photos.length]);
 
   // Delete photo
   const handleDelete = async () => {
@@ -124,19 +355,14 @@ export default function GalleryView() {
 
     setDeleting(true);
     try {
-      // Delete from Supabase Storage (best-effort)
       await deletePhotoFromStorage(selectedPhoto.imageUrl);
-
-      // Delete Firestore doc
       await deleteDoc(doc(db, "galleries", id, "photos", selectedPhoto.id));
 
-      // Advance to next photo or close
       if (photos.length <= 1) {
-        closeLightbox();
+        setSelectedIndex(null);
       } else if (selectedIndex! >= photos.length - 1) {
         setSelectedIndex(selectedIndex! - 1);
       }
-      // else stay at same index — the array will shift
       setConfirmDelete(false);
     } catch (err) {
       console.error("Delete failed:", err);
@@ -186,7 +412,7 @@ export default function GalleryView() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: i * 0.05 }}
-              onClick={() => { setSelectedIndex(i); setSlideDir(1); setConfirmDelete(false); }}
+              onClick={() => { setSelectedIndex(i); setConfirmDelete(false); }}
               className="relative aspect-[3/4] bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer"
             >
               <img 
@@ -217,109 +443,18 @@ export default function GalleryView() {
       {/* Lightbox */}
       <AnimatePresence>
         {selectedPhoto && selectedIndex !== null && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-2xl flex flex-col items-center justify-center"
-          >
-            {/* Close button */}
-            <button
-              onClick={closeLightbox}
-              className="absolute top-6 right-6 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
-            >
-              <X size={18} className="text-white/70" />
-            </button>
-
-            {/* Photo counter */}
-            <div className="absolute top-7 left-1/2 -translate-x-1/2 z-10">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-bold">
-                {selectedIndex + 1} / {photos.length}
-              </p>
-            </div>
-
-            {/* Navigation arrows */}
-            {selectedIndex > 0 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); goPrev(); }}
-                className="absolute left-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
-              >
-                <ChevronLeft size={20} className="text-white/70" />
-              </button>
-            )}
-            {selectedIndex < photos.length - 1 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); goNext(); }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 z-10 w-10 h-10 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center active:scale-90 transition-transform"
-              >
-                <ChevronRight size={20} className="text-white/70" />
-              </button>
-            )}
-
-            {/* Photo display */}
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={selectedPhoto.id}
-                initial={{ opacity: 0, x: slideDir * 320 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: slideDir * -320 }}
-                transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                drag="x"
-                dragConstraints={{ left: 0, right: 0 }}
-                dragElastic={0.6}
-                onDragEnd={(event, info) => {
-                  const swipeThreshold = 50;
-                  if (info.offset.x < -swipeThreshold) {
-                    goNext();
-                  } else if (info.offset.x > swipeThreshold) {
-                    goPrev();
-                  }
-                }}
-                className="relative max-w-lg w-full px-6 cursor-grab active:cursor-grabbing"
-              >
-                <div className="bg-card rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
-                  <img
-                    src={selectedPhoto.imageUrl}
-                    className="w-full max-h-[65vh] object-contain bg-black"
-                  />
-                  <div className="p-6 bg-gradient-to-t from-card to-card/80">
-                    <p className="text-2xl font-serif italic text-accent">
-                      {contributors[selectedPhoto.contributorId]?.nickname || "Guest"}
-                    </p>
-                    <p className="text-xs text-text-muted mt-1 font-medium uppercase tracking-widest">
-                      {format(selectedPhoto.createdAt.toDate(), "MMMM do, h:mm a")}
-                    </p>
-                  </div>
-                </div>
-              </motion.div>
-            </AnimatePresence>
-
-            {/* Action buttons */}
-            <div className="flex items-center space-x-4 mt-6">
-              <button
-                onClick={handleDownload}
-                className="px-6 py-3 bg-white/10 backdrop-blur-md text-white rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center space-x-2 active:scale-95 transition-transform"
-              >
-                <Download size={14} />
-                <span>Save</span>
-              </button>
-
-              {isCreator && (
-                <button
-                  onClick={handleDelete}
-                  disabled={deleting}
-                  className={`px-6 py-3 rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center space-x-2 active:scale-95 transition-all ${
-                    confirmDelete
-                      ? 'bg-red-600 text-white animate-pulse'
-                      : 'bg-white/10 backdrop-blur-md text-red-400'
-                  } disabled:opacity-50`}
-                >
-                  <Trash2 size={14} />
-                  <span>{deleting ? "Deleting..." : confirmDelete ? "Tap to Confirm" : "Delete"}</span>
-                </button>
-              )}
-            </div>
-          </motion.div>
+          <LightboxCarousel
+            photos={photos}
+            contributors={contributors}
+            selectedIndex={selectedIndex}
+            onChangeIndex={(i) => { setSelectedIndex(i); setConfirmDelete(false); }}
+            onClose={() => { setSelectedIndex(null); setConfirmDelete(false); }}
+            isCreator={isCreator}
+            onDelete={handleDelete}
+            confirmDelete={confirmDelete}
+            deleting={deleting}
+            onDownload={handleDownload}
+          />
         )}
       </AnimatePresence>
     </PageWrapper>

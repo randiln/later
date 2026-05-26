@@ -6,8 +6,9 @@ import { uploadPhoto } from "../lib/supabase";
 import { Gallery, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
+import Button from "../components/Button";
 import { motion, AnimatePresence } from "motion/react";
-import { LogOut, Zap, ZapOff, SwitchCamera } from "lucide-react";
+import { LogOut, Zap, ZapOff, SwitchCamera, Camera } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 
 export default function Capture() {
@@ -26,6 +27,7 @@ export default function Capture() {
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
   const [flashEffect, setFlashEffect] = useState(false);
+  const [paused, setPaused] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -128,6 +130,7 @@ export default function Capture() {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+    setStream(null);
   };
 
   const toggleFlash = () => {
@@ -161,6 +164,16 @@ export default function Capture() {
     try {
       await track.applyConstraints({ advanced: [{ torch: false } as any] });
     } catch {}
+  };
+
+  const pauseCamera = () => {
+    stopCamera();
+    setPaused(true);
+  };
+
+  const resumeCamera = () => {
+    setPaused(false);
+    startCamera(facingMode);
   };
 
   const takePhoto = async () => {
@@ -291,6 +304,7 @@ export default function Capture() {
 
   const shotsLeft = gallery.maxShots - contributor.shotsTaken;
 
+  // ── All shots used ──
   if (shotsLeft <= 0 && !preview && !capturing) {
     return (
       <PageWrapper>
@@ -312,6 +326,64 @@ export default function Capture() {
           <p className="text-xs text-zinc-800 font-bold uppercase tracking-widest">
             See you on the other side.
           </p>
+        </div>
+      </PageWrapper>
+    );
+  }
+
+  // ── Paused / Waiting lobby ──
+  if (paused) {
+    return (
+      <PageWrapper>
+        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-10">
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="flex flex-col items-center space-y-10"
+          >
+            <motion.div
+              animate={{ opacity: [0.5, 1, 0.5] }}
+              transition={{ duration: 3, repeat: Infinity }}
+            >
+              <Badge label="Camera Paused" />
+            </motion.div>
+
+            <div className="space-y-4">
+              <h2 className="text-4xl font-serif italic text-white/90 leading-tight">
+                {gallery.title}
+              </h2>
+              <p className="text-text-muted text-sm max-w-[280px] mx-auto italic leading-relaxed">
+                Take a break. Your shots will be waiting for you when you're ready.
+              </p>
+            </div>
+
+            {/* Shots info */}
+            <div className="py-6 w-full max-w-xs border-y border-white/5 space-y-5">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-2">Shots Remaining</p>
+                <p className="text-3xl font-serif italic text-accent tracking-tight">
+                  {shotsLeft} <span className="text-lg text-white/30">/ {gallery.maxShots}</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-2">Reveal Countdown</p>
+                <p className="text-3xl font-serif italic text-accent tracking-tight">
+                  {formatDistanceToNow(gallery.revealAt.toDate())}
+                </p>
+              </div>
+            </div>
+
+            {/* Resume button */}
+            <Button onClick={resumeCamera}>
+              <Camera size={18} />
+              <span>Resume Camera</span>
+            </Button>
+
+            <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
+              Contributor: {contributor.nickname}
+            </p>
+          </motion.div>
         </div>
       </PageWrapper>
     );
@@ -420,7 +492,7 @@ export default function Capture() {
               </button>
             )}
             <button
-              onClick={() => navigate(-1)}
+              onClick={pauseCamera}
               className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
             >
               <LogOut size={18} className="text-white/60" />

@@ -14,7 +14,7 @@ export default function CreateEvent() {
   const [startsAt, setStartsAt] = useState("");
   const [revealAt, setRevealAt] = useState("");
   const [maxShots, setMaxShots] = useState(12);
-  const [maxContributors, setMaxContributors] = useState(24);
+  const [maxContributors, setMaxContributors] = useState(10);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -111,7 +111,7 @@ export default function CreateEvent() {
           <input
             type="range"
             min="1"
-            max="36"
+            max="20"
             className="w-full accent-accent bg-white/5 h-1.5 rounded-full appearance-none cursor-pointer"
             value={maxShots}
             onChange={(e) => setMaxShots(Number(e.target.value))}
@@ -126,7 +126,7 @@ export default function CreateEvent() {
           <input
             type="range"
             min="2"
-            max="100"
+            max="15"
             className="w-full accent-accent bg-white/5 h-1.5 rounded-full appearance-none cursor-pointer"
             value={maxContributors}
             onChange={(e) => setMaxContributors(Number(e.target.value))}
