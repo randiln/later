@@ -55,11 +55,15 @@ function LightboxCarousel({
   const VELOCITY_THRESHOLD = 0.3;   // px/ms — fast flick commits even if short
   const startTime = useRef(0);
 
+  // The strip has 3 slides: [prev, curr, next]. Each is 100vw wide.
+  // To show the center (curr) slide, we offset by -1 × viewport width.
+  const getBaseOffset = () => -window.innerWidth;
+
   // Translate the strip without re-rendering React
   const setTranslate = (px: number, transition = "none") => {
     if (!stripRef.current) return;
     stripRef.current.style.transition = transition;
-    stripRef.current.style.transform = `translateX(${px}px)`;
+    stripRef.current.style.transform = `translateX(${getBaseOffset() + px}px)`;
   };
 
   // Reset strip to center (current photo) instantly
@@ -221,7 +225,7 @@ function LightboxCarousel({
         <div
           ref={stripRef}
           className="flex w-full will-change-transform"
-          style={{ transform: "translateX(0px)" }}
+          style={{ transform: `translateX(${-window.innerWidth}px)` }}
         >
           {renderSlide(prevPhoto, `prev-${prevPhoto?.id || "empty"}`)}
           {renderSlide(currPhoto, `curr-${currPhoto.id}`)}
