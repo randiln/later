@@ -2,7 +2,8 @@ import React, { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, collection, query, orderBy, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
-import { deletePhoto as deletePhotoFromStorage } from "../lib/supabase";
+import { deletePhoto } from "../lib/supabase";
+import { getThumbnailUrl, getFullSizeUrl, getRawUrl } from "../lib/imageUrl";
 import { Gallery, Photo, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
@@ -158,7 +159,7 @@ function LightboxCarousel({
         <div className="max-w-lg w-full">
           <div className="bg-card rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
             <img
-              src={photo.imageUrl}
+              src={getFullSizeUrl(photo.storagePath)}
               className="w-full max-h-[65vh] object-contain bg-black"
               draggable={false}
             />
@@ -359,7 +360,7 @@ export default function GalleryView() {
 
     setDeleting(true);
     try {
-      await deletePhotoFromStorage(selectedPhoto.imageUrl);
+      await deletePhoto(selectedPhoto.storagePath);
       await deleteDoc(doc(db, "galleries", id, "photos", selectedPhoto.id));
 
       if (photos.length <= 1) {
@@ -379,7 +380,7 @@ export default function GalleryView() {
   const handleDownload = async () => {
     if (!selectedPhoto) return;
     try {
-      const response = await fetch(selectedPhoto.imageUrl);
+      const response = await fetch(getRawUrl(selectedPhoto.storagePath));
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -420,7 +421,7 @@ export default function GalleryView() {
               className="relative aspect-[3/4] bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer"
             >
               <img 
-                src={photo.imageUrl} 
+                src={getThumbnailUrl(photo.storagePath)} 
                 className="w-full h-full object-cover transition-all duration-700 group-hover:scale-105" 
                 loading="lazy" 
               />

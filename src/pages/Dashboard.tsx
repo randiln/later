@@ -6,7 +6,7 @@ import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
 import { Plus, Calendar, Camera, ChevronRight, LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { formatDistanceToNow, isPast } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 import { motion } from "motion/react";
 
 export default function Dashboard() {
@@ -31,8 +31,8 @@ export default function Dashboard() {
         all.push({ id: doc.id, ...doc.data() } as Gallery);
       });
 
-      setUpcoming(all.filter(g => !isPast(g.revealAt.toDate())));
-      setPast(all.filter(g => isPast(g.revealAt.toDate())));
+      setUpcoming(all.filter(g => g.status !== 'revealed'));
+      setPast(all.filter(g => g.status === 'revealed'));
       setLoading(false);
       setError(null);
     }, (err) => {
@@ -129,7 +129,7 @@ export default function Dashboard() {
 }
 
 function GalleryCard({ gallery, onClick }: { gallery: Gallery; onClick: () => void; key?: string }) {
-  const hasRevealed = isPast(gallery.revealAt.toDate());
+  const hasRevealed = gallery.status === 'revealed';
   
   return (
     <motion.button

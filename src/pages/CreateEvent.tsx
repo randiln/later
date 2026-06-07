@@ -48,6 +48,7 @@ export default function CreateEvent() {
         revealAt: Timestamp.fromDate(revealDate),
         maxShots: Number(maxShots),
         maxContributors: Number(maxContributors),
+        status: 'upcoming',
         createdAt: serverTimestamp(),
       });
       navigate("/dashboard");

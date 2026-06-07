@@ -9,7 +9,7 @@ import Badge from "../components/Badge";
 import Button from "../components/Button";
 import { motion, AnimatePresence } from "motion/react";
 import { LogOut, Zap, ZapOff, SwitchCamera, Camera } from "lucide-react";
-import { formatDistanceToNow, isPast } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 
 export default function Capture() {
   const { id } = useParams<{ id: string }>();
@@ -47,7 +47,7 @@ export default function Capture() {
       if (docSnap.exists()) {
         const g = { id: docSnap.id, ...docSnap.data() } as Gallery;
         setGallery(g);
-        if (isPast(g.revealAt.toDate())) {
+        if (g.status === 'revealed') {
           navigate(`/gallery/${id}`);
         }
       }
@@ -195,7 +195,7 @@ export default function Capture() {
     setFlashEffect(true);
     setTimeout(() => setFlashEffect(false), 150);
 
-    const MAX_DIM = 1200;
+    const MAX_DIM = 4096;
 
     let width = video.videoWidth || 640;
     let height = video.videoHeight || 480;
@@ -245,13 +245,13 @@ export default function Capture() {
     }
 
     // Generate a preview data URL for the instant polaroid effect
-    const previewUrl = canvas.toDataURL("image/jpeg", 0.5);
+    const previewUrl = canvas.toDataURL("image/jpeg", 0.4);
     setPreviewLandscape(effectiveW > effectiveH);
     setPreview(previewUrl);
 
     // Convert canvas to a JPEG blob for Supabase upload
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.8)
+      canvas.toBlob(resolve, "image/jpeg", 0.92)
     );
 
     if (!blob) {
@@ -272,14 +272,14 @@ export default function Capture() {
           return;
         }
 
-        // Upload to Supabase Storage and get the public URL
-        const imageUrl = await uploadPhoto(blob, id, contributor.id);
+        // Upload to Supabase Storage and get the relative storage path
+        const storagePath = await uploadPhoto(blob, id, contributor.id);
 
-        // Save the Supabase public URL to Firestore
+        // Save the storage path to Firestore
         await addDoc(collection(db, "galleries", id, "photos"), {
           galleryId: id,
           contributorId: contributor.id,
-          imageUrl,
+          storagePath,
           createdAt: serverTimestamp()
         });
 

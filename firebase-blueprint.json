@@ -25,9 +25,10 @@
         "themeColor": { "type": "string" },
         "welcomeMessage": { "type": "string" },
         "coverImageUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["upcoming", "active", "revealed"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["creatorId", "title", "startsAt", "revealAt", "maxShots", "createdAt"]
+      "required": ["creatorId", "title", "startsAt", "revealAt", "maxShots", "status", "createdAt"]
     },
     "contributor": {
       "title": "Contributor",

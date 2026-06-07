@@ -8,7 +8,7 @@ import Badge from "../components/Badge";
 import Button from "../components/Button";
 import { motion } from "motion/react";
 import { ArrowRight } from "lucide-react";
-import { formatDistanceToNow, isPast } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 
 export default function Join() {
   const { id } = useParams<{ id: string }>();
@@ -44,9 +44,9 @@ export default function Join() {
         if (savedContributorId) {
           const cSnap = await getDoc(doc(db, "galleries", id, "contributors", savedContributorId));
           if (cSnap.exists()) {
-            if (isPast(g.revealAt.toDate())) {
+            if (g.status === 'revealed') {
               navigate(`/gallery/${id}`);
-            } else if (isPast(g.startsAt.toDate())) {
+            } else if (g.status === 'active') {
               navigate(`/capture/${id}`);
             }
           }
@@ -97,7 +97,7 @@ export default function Join() {
   if (loading) return null;
   if (!gallery) return null;
 
-  const hasStarted = isPast(gallery.startsAt.toDate());
+  const hasStarted = gallery.status !== 'upcoming';
 
   if (!hasStarted) {
     return (

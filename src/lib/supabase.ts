@@ -35,7 +35,7 @@ export const supabase = createClient(
 export const PHOTOS_BUCKET = "gallery-photos";
 
 /**
- * Upload a JPEG blob to Supabase Storage and return the public URL.
+ * Upload a JPEG blob to Supabase Storage and return the relative storage path.
  *
  * Files are stored as: `{galleryId}/{contributorId}/{timestamp}.jpg`
  */
@@ -48,7 +48,7 @@ export async function uploadPhoto(
     throw new Error("Photo storage is not configured. Please contact the event creator.");
   }
 
-  const filename = `${galleryId}/${contributorId}/${Date.now()}.jpg`;
+  const storagePath = `${galleryId}/${contributorId}/${Date.now()}.jpg`;
 
   // Convert Blob → ArrayBuffer so the SDK uses the raw-binary upload path
   // (Content-Type: image/jpeg header) instead of multipart FormData.
@@ -56,7 +56,7 @@ export async function uploadPhoto(
 
   const { error } = await supabase.storage
     .from(PHOTOS_BUCKET)
-    .upload(filename, arrayBuffer, {
+    .upload(storagePath, arrayBuffer, {
       contentType: "image/jpeg",
       cacheControl: "3600",
       upsert: false,
@@ -64,7 +64,7 @@ export async function uploadPhoto(
 
   if (error) {
     const status = (error as { statusCode?: string | number }).statusCode;
-    const endpoint = `${supabaseUrl}/storage/v1/object/${PHOTOS_BUCKET}/${filename}`;
+    const endpoint = `${supabaseUrl}/storage/v1/object/${PHOTOS_BUCKET}/${storagePath}`;
     console.error("Supabase upload failed", { endpoint, status, error });
     // Include diagnostics in the message so they appear in the on-screen
     // error toast (useful when no dev tools are available, e.g. mobile).
@@ -73,40 +73,25 @@ export async function uploadPhoto(
     );
   }
 
-  const { data } = supabase.storage
-    .from(PHOTOS_BUCKET)
-    .getPublicUrl(filename);
-
-  return data.publicUrl;
+  return storagePath;
 }
 
 /**
- * Delete a photo from Supabase Storage by its public URL.
- *
- * Extracts the storage path from URLs like:
- *   https://<project>.supabase.co/storage/v1/object/public/gallery-photos/<path>
+ * Delete a photo from Supabase Storage by its relative storage path.
  *
  * Logs errors but does not throw — Firestore is the source of truth and
  * orphaned storage files are acceptable.
  */
-export async function deletePhoto(imageUrl: string): Promise<void> {
+export async function deletePhoto(storagePath: string): Promise<void> {
   if (!isSupabaseConfigured) {
     console.warn("Supabase not configured — skipping storage deletion.");
     return;
   }
 
   try {
-    const marker = `/object/public/${PHOTOS_BUCKET}/`;
-    const idx = imageUrl.indexOf(marker);
-    if (idx === -1) {
-      console.warn("Could not extract storage path from URL:", imageUrl);
-      return;
-    }
-    const path = decodeURIComponent(imageUrl.slice(idx + marker.length));
-
     const { error } = await supabase.storage
       .from(PHOTOS_BUCKET)
-      .remove([path]);
+      .remove([storagePath]);
 
     if (error) {
       console.error("Supabase delete failed:", error);

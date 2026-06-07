@@ -1,14 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, onSnapshot, collection, deleteDoc, getDocs } from "firebase/firestore";
-import { db, logFirestoreError, OperationType } from "../lib/firebase";
-import { deletePhoto as deletePhotoFromStorage } from "../lib/supabase";
+import { doc, onSnapshot, collection } from "firebase/firestore";
+import { db, functions, logFirestoreError, OperationType } from "../lib/firebase";
 import { Gallery, Contributor } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
 import { ArrowLeft, Copy, Camera, Trash2, Users } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { isPast } from "date-fns";
+import { httpsCallable } from "firebase/functions";
 
 export default function EventManagement() {
   const { id } = useParams<{ id: string }>();
@@ -82,21 +81,8 @@ export default function EventManagement() {
 
     setDeletingGallery(true);
     try {
-      // Delete all photos (Firestore docs + Supabase files)
-      const photosSnap = await getDocs(collection(db, "galleries", id, "photos"));
-      await Promise.all(photosSnap.docs.map(async (photoDoc) => {
-        const imageUrl = photoDoc.data().imageUrl;
-        if (imageUrl) await deletePhotoFromStorage(imageUrl);
-        await deleteDoc(photoDoc.ref);
-      }));
-
-      // Delete all contributors
-      const contribSnap = await getDocs(collection(db, "galleries", id, "contributors"));
-      await Promise.all(contribSnap.docs.map(d => deleteDoc(d.ref)));
-
-      // Delete the gallery doc itself
-      await deleteDoc(doc(db, "galleries", id));
-
+      const deleteGalleryFn = httpsCallable(functions, 'deleteGallery');
+      await deleteGalleryFn({ galleryId: id });
       navigate("/dashboard");
     } catch (err) {
       console.error("Gallery deletion failed:", err);
@@ -105,8 +91,8 @@ export default function EventManagement() {
     }
   };
 
-  const hasRevealed = isPast(gallery.revealAt.toDate());
-  const isLive = isPast(gallery.startsAt.toDate()) && !hasRevealed;
+  const hasRevealed = gallery.status === 'revealed';
+  const isLive = gallery.status === 'active';
 
   return (
     <PageWrapper>

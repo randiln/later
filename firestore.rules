@@ -36,13 +36,23 @@ service cloud.firestore {
           && data.maxShots is int && data.maxShots > 0 && data.maxShots <= 100
           && data.maxContributors is int && data.maxContributors > 0 && data.maxContributors <= 500
           && data.creatorId == request.auth.uid
-          && data.createdAt == request.time;
+          && data.status is string
+          && data.status in ['upcoming', 'active', 'revealed'];
+      }
+
+      function galleryStatus() {
+        return getGallery(galleryId).status;
       }
 
       allow read: if true; 
       allow list: if isSignedIn() && resource.data.creatorId == request.auth.uid;
-      allow create: if isVerified() && isValidGallery(incomingData());
-      allow update: if isVerified() && existingData().creatorId == request.auth.uid && isValidGallery(incomingData());
+      allow create: if isVerified() && isValidGallery(incomingData())
+        && incomingData().status == 'upcoming'
+        && incomingData().createdAt == request.time;
+      // Clients may update gallery fields but cannot change status — only the Cloud Function advances it
+      allow update: if isVerified() && existingData().creatorId == request.auth.uid
+        && isValidGallery(incomingData())
+        && incomingData().status == existingData().status;
       allow delete: if isVerified() && existingData().creatorId == request.auth.uid;
 
       // --- Contributors ---
@@ -73,6 +83,7 @@ service cloud.firestore {
 
       // --- Photos ---
       match /photos/{photoId} {
+        // Timestamp checks remain as source-of-truth fallback
         function isRevealed() {
           return getGallery(galleryId).revealAt <= request.time;
         }
@@ -80,14 +91,15 @@ service cloud.firestore {
           return getGallery(galleryId).startsAt <= request.time;
         }
 
-        allow read: if isRevealed();
-        allow create: if hasStarted()
-          && !isRevealed()
+        // Primary: status field (fast path, set by Cloud Function)
+        // Fallback: timestamp comparison (source of truth)
+        allow read: if galleryStatus() == 'revealed' || isRevealed();
+        allow create: if (galleryStatus() == 'active' || (hasStarted() && !isRevealed()))
           && incomingData().galleryId == galleryId
           && incomingData().contributorId is string
-          && incomingData().imageUrl is string
-          && incomingData().imageUrl.size() > 0
-          && incomingData().imageUrl.size() <= 2048
+          && incomingData().storagePath is string
+          && incomingData().storagePath.size() > 0
+          && incomingData().storagePath.size() <= 2048
           && incomingData().createdAt == request.time
           // Validate contributor exists and has shots left
           && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;
