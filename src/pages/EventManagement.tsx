@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, onSnapshot, collection } from "firebase/firestore";
+import { doc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { db, functions, logFirestoreError, OperationType } from "../lib/firebase";
+import { deletePhoto } from "../lib/supabase";
 import { Gallery, Contributor } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
@@ -85,9 +86,35 @@ export default function EventManagement() {
       await deleteGalleryFn({ galleryId: id });
       navigate("/dashboard");
     } catch (err) {
-      console.error("Gallery deletion failed:", err);
-      setDeletingGallery(false);
-      setConfirmDeleteGallery(false);
+      console.warn("Cloud function deletion failed, attempting client-side fallback deletion...", err);
+      try {
+        // 1. Delete all photos (Firestore docs + Supabase files)
+        const photosSnap = await getDocs(collection(db, "galleries", id, "photos"));
+        await Promise.all(photosSnap.docs.map(async (photoDoc) => {
+          const storagePath = photoDoc.data().storagePath;
+          if (storagePath) {
+            try {
+              await deletePhoto(storagePath);
+            } catch (storageErr) {
+              console.error("Failed to delete storage path client-side:", storagePath, storageErr);
+            }
+          }
+          await deleteDoc(photoDoc.ref);
+        }));
+
+        // 2. Delete all contributors
+        const contribSnap = await getDocs(collection(db, "galleries", id, "contributors"));
+        await Promise.all(contribSnap.docs.map(d => deleteDoc(d.ref)));
+
+        // 3. Delete the gallery doc itself
+        await deleteDoc(doc(db, "galleries", id));
+
+        navigate("/dashboard");
+      } catch (clientErr) {
+        console.error("Client-side fallback deletion failed:", clientErr);
+        setDeletingGallery(false);
+        setConfirmDeleteGallery(false);
+      }
     }
   };
 
