@@ -390,9 +390,9 @@ export default function Capture() {
   }
 
   return (
-    <div className="fixed inset-0 bg-black z-50 flex flex-col touch-none select-none grainy">
+    <div className="fixed inset-0 bg-black z-50 touch-none select-none grainy">
       {/* Viewport */}
-      <div className="relative flex-1 overflow-hidden bg-black flex items-center justify-center">
+      <div className="absolute inset-0 overflow-hidden bg-black flex items-center justify-center">
         {/* Flash white overlay */}
         <AnimatePresence>
           {flashEffect && (
@@ -503,11 +503,9 @@ export default function Capture() {
 
       <canvas ref={canvasRef} className="hidden" />
 
-      {/* Shutter Bar */}
-      <div className="h-[220px] bg-black flex flex-col items-center justify-center relative overflow-hidden">
-        <div className="absolute top-0 inset-x-0 h-px bg-white/5" />
-
-        <div className="flex items-center justify-center space-x-8">
+      {/* Shutter Bar Overlay */}
+      <div className="absolute bottom-0 inset-x-0 h-[220px] flex flex-col items-center justify-center z-30 pointer-events-none bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+        <div className="flex items-center justify-center space-x-8 pointer-events-auto">
           {/* Flip camera button */}
           {hasMultipleCameras ? (
             <button
@@ -541,7 +539,7 @@ export default function Capture() {
         </div>
 
         {/* Contributor Label */}
-        <div className="absolute bottom-6 flex items-center space-x-2">
+        <div className="absolute bottom-6 flex items-center space-x-2 pointer-events-auto">
           <div className="w-1 h-1 bg-accent rounded-full" />
           <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-60 italic">Contributor: {contributor.nickname}</p>
         </div>
