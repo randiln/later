@@ -110,6 +110,8 @@ export default function Capture() {
       setStream(s);
       if (videoRef.current) {
         videoRef.current.srcObject = s;
+        // Explicitly play for iOS Safari reliability
+        videoRef.current.play().catch(e => console.error("Video play failed:", e));
       }
       // Feature-detect torch / flashlight support (only available on rear camera)
       try {
@@ -390,9 +392,9 @@ export default function Capture() {
   }
 
   return (
-    <div className="fixed inset-0 bg-black z-50 touch-none select-none grainy">
+    <div className="fixed inset-0 h-[100dvh] w-full bg-black z-50 touch-none select-none overflow-hidden">
       {/* Viewport */}
-      <div className="absolute inset-0 overflow-hidden bg-black flex items-center justify-center">
+      <div className="absolute inset-0 bg-black flex items-center justify-center">
         {/* Flash white overlay */}
         <AnimatePresence>
           {flashEffect && (
