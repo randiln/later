@@ -91,8 +91,8 @@ export default function EventManagement() {
     }
   };
 
-  const hasRevealed = gallery.status === 'revealed';
-  const isLive = gallery.status === 'active';
+  const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= new Date();
+  const isLive = gallery.status === 'active' || (gallery.startsAt.toDate() <= new Date() && !hasRevealed);
 
   return (
     <PageWrapper>

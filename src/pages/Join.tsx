@@ -44,9 +44,11 @@ export default function Join() {
         if (savedContributorId) {
           const cSnap = await getDoc(doc(db, "galleries", id, "contributors", savedContributorId));
           if (cSnap.exists()) {
-            if (g.status === 'revealed') {
+            const isRevealed = g.status === 'revealed' || g.revealAt.toDate() <= new Date();
+            const isLive = g.status === 'active' || (g.startsAt.toDate() <= new Date() && !isRevealed);
+            if (isRevealed) {
               navigate(`/gallery/${id}`);
-            } else if (g.status === 'active') {
+            } else if (isLive) {
               navigate(`/capture/${id}`);
             }
           }
@@ -97,7 +99,7 @@ export default function Join() {
   if (loading) return null;
   if (!gallery) return null;
 
-  const hasStarted = gallery.status !== 'upcoming';
+  const hasStarted = gallery.status !== 'upcoming' || gallery.startsAt.toDate() <= new Date();
 
   if (!hasStarted) {
     return (
@@ -113,7 +115,7 @@ export default function Join() {
           <div className="space-y-4">
             <h2 className="text-5xl font-serif italic text-white/90">{gallery.title}</h2>
             <div className="text-4xl font-serif italic text-accent py-4">
-              {formatDistanceToNow(gallery.startsAt.toDate())}
+              {formatDistanceToNow(gallery.startsAt.toDate(), { addSuffix: true })}
             </div>
           </div>
 

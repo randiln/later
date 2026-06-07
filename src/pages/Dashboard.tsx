@@ -31,8 +31,9 @@ export default function Dashboard() {
         all.push({ id: doc.id, ...doc.data() } as Gallery);
       });
 
-      setUpcoming(all.filter(g => g.status !== 'revealed'));
-      setPast(all.filter(g => g.status === 'revealed'));
+      const isGalleryRevealed = (g: Gallery) => g.status === 'revealed' || g.revealAt.toDate() <= new Date();
+      setUpcoming(all.filter(g => !isGalleryRevealed(g)));
+      setPast(all.filter(g => isGalleryRevealed(g)));
       setLoading(false);
       setError(null);
     }, (err) => {
@@ -129,7 +130,7 @@ export default function Dashboard() {
 }
 
 function GalleryCard({ gallery, onClick }: { gallery: Gallery; onClick: () => void; key?: string }) {
-  const hasRevealed = gallery.status === 'revealed';
+  const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= new Date();
   
   return (
     <motion.button

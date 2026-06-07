@@ -47,7 +47,7 @@ export default function Capture() {
       if (docSnap.exists()) {
         const g = { id: docSnap.id, ...docSnap.data() } as Gallery;
         setGallery(g);
-        if (g.status === 'revealed') {
+        if (g.status === 'revealed' || g.revealAt.toDate() <= new Date()) {
           navigate(`/gallery/${id}`);
         }
       }
@@ -319,7 +319,7 @@ export default function Capture() {
           <div className="py-8 w-full border-y border-white/5">
             <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-4">Reveal Countdown</p>
             <p className="text-5xl font-serif italic text-accent tracking-tight">
-              {formatDistanceToNow(gallery.revealAt.toDate())}
+              {formatDistanceToNow(gallery.revealAt.toDate(), { addSuffix: true })}
             </p>
           </div>
 
@@ -369,7 +369,7 @@ export default function Capture() {
               <div>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold mb-2">Reveal Countdown</p>
                 <p className="text-3xl font-serif italic text-accent tracking-tight">
-                  {formatDistanceToNow(gallery.revealAt.toDate())}
+                  {formatDistanceToNow(gallery.revealAt.toDate(), { addSuffix: true })}
                 </p>
               </div>
             </div>
