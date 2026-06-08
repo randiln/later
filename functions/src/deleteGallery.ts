@@ -112,37 +112,61 @@ export const deleteGallery = onCall(
       );
     }
 
-    // --- Collect storage paths from photos subcollection ---
-    const photosRef = galleryRef.collection('photos');
-    const photosSnap = await photosRef.get();
+    // --- Delete files from Supabase Storage (Robust folder cleanup) ---
+    const supabase = getSupabaseClient();
+    const failedPaths: string[] = [];
 
-    const storagePaths: string[] = [];
-    for (const photoDoc of photosSnap.docs) {
-      const path = photoDoc.data().storagePath as string | undefined;
-      if (path) {
-        storagePaths.push(path);
-      }
-    }
+    try {
+      // List all items in the root of the gallery folder (usually contributor subfolders)
+      const { data: rootItems, error: rootError } = await supabase.storage
+        .from('gallery-photos')
+        .list(galleryId);
 
-    // --- Delete files from Supabase Storage ---
-    if (storagePaths.length > 0) {
-      const supabase = getSupabaseClient();
-      const failedPaths: string[] = [];
+      if (rootError) {
+        logger.error(`deleteGallery: Failed to list root items for gallery ${galleryId}`, rootError);
+      } else if (rootItems && rootItems.length > 0) {
+        const filesToDelete: string[] = [];
 
-      // Process in batches of STORAGE_DELETE_BATCH_SIZE
-      for (let i = 0; i < storagePaths.length; i += STORAGE_DELETE_BATCH_SIZE) {
-        const batch = storagePaths.slice(i, i + STORAGE_DELETE_BATCH_SIZE);
+        for (const item of rootItems) {
+          // In Supabase storage list output, directories do not have an ID (or item.id is missing/null)
+          const isFolder = !item.id;
 
-        const { error } = await supabase.storage
-          .from('gallery-photos')
-          .remove(batch);
+          if (isFolder) {
+            // It's a contributor folder. List and add all files inside it.
+            const { data: subItems, error: subError } = await supabase.storage
+              .from('gallery-photos')
+              .list(`${galleryId}/${item.name}`);
 
-        if (error) {
-          logger.error(
-            `deleteGallery: Failed to delete storage batch starting at index ${i} for gallery ${galleryId}`,
-            error
-          );
-          failedPaths.push(...batch);
+            if (subError) {
+              logger.error(`deleteGallery: Failed to list items in folder ${galleryId}/${item.name}`, subError);
+            } else if (subItems) {
+              for (const subItem of subItems) {
+                filesToDelete.push(`${galleryId}/${item.name}/${subItem.name}`);
+              }
+            }
+          } else {
+            // It's a file sitting in the root of the gallery folder.
+            filesToDelete.push(`${galleryId}/${item.name}`);
+          }
+        }
+
+        // Delete all collected files in batches
+        if (filesToDelete.length > 0) {
+          logger.info(`deleteGallery: Attempting to delete ${filesToDelete.length} files from Supabase for gallery ${galleryId}`);
+          for (let i = 0; i < filesToDelete.length; i += STORAGE_DELETE_BATCH_SIZE) {
+            const batch = filesToDelete.slice(i, i + STORAGE_DELETE_BATCH_SIZE);
+            const { error } = await supabase.storage
+              .from('gallery-photos')
+              .remove(batch);
+
+            if (error) {
+              logger.error(
+                `deleteGallery: Failed to delete storage batch starting at index ${i} for gallery ${galleryId}`,
+                error
+              );
+              failedPaths.push(...batch);
+            }
+          }
         }
       }
 
@@ -160,7 +184,12 @@ export const deleteGallery = onCall(
           `deleteGallery: ${failedPaths.length} paths written to cleanup_queue for gallery ${galleryId}.`
         );
       }
+    } catch (err) {
+      logger.error(`deleteGallery: Exception during storage cleanup for gallery ${galleryId}`, err);
     }
+
+    // Reference photos collection for Firestore subcollection cleanup
+    const photosRef = galleryRef.collection('photos');
 
     // --- Delete Firestore subcollections ---
     await deleteSubcollection(photosRef);
