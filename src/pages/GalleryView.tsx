@@ -11,6 +11,7 @@ import LoadingScreen from "../components/LoadingScreen";
 import { motion, AnimatePresence } from "motion/react";
 import { Camera, ChevronLeft, ChevronRight, Trash2, Download, X } from "lucide-react";
 import { format } from "date-fns";
+import JSZip from "jszip";
 
 /* ─────────────────────────── Lightbox Swipe Carousel ─────────────────────────
  * Architecture: instead of animating individual slides in/out (which fights
@@ -275,6 +276,8 @@ export default function GalleryView() {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
 
   const isCreator = auth.currentUser?.uid === gallery?.creatorId;
   const selectedPhoto = selectedIndex !== null ? photos[selectedIndex] : null;
@@ -385,7 +388,14 @@ export default function GalleryView() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `later-${selectedPhoto.id}.jpg`;
+      
+      const nickname = contributors[selectedPhoto.contributorId]?.nickname || "Guest";
+      let dateStr = "unknown";
+      try {
+        dateStr = format(selectedPhoto.createdAt.toDate(), "yyyy-MM-dd_HH-mm-ss");
+      } catch {}
+      a.download = `${nickname}_${dateStr}.jpg`;
+      
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -395,13 +405,72 @@ export default function GalleryView() {
     }
   };
 
+  // Bulk download gallery
+  const handleDownloadAll = async () => {
+    if (photos.length === 0 || downloadingAll || !gallery) return;
+    setDownloadingAll(true);
+    setDownloadProgress(0);
+
+    const zip = new JSZip();
+
+    try {
+      for (let i = 0; i < photos.length; i++) {
+        const photo = photos[i];
+        const nickname = contributors[photo.contributorId]?.nickname || "Guest";
+        
+        let dateStr = "unknown";
+        try {
+          dateStr = format(photo.createdAt.toDate(), "yyyy-MM-dd_HH-mm-ss");
+        } catch {}
+
+        // Format name: 01_Nickname_2026-06-08_10-40-00.jpg
+        const filename = `${String(i + 1).padStart(2, '0')}_${nickname}_${dateStr}.jpg`;
+
+        const response = await fetch(getRawUrl(photo.storagePath));
+        if (!response.ok) throw new Error(`Failed to fetch photo ${photo.id}`);
+        const blob = await response.blob();
+        
+        zip.file(filename, blob);
+        setDownloadProgress(Math.round(((i + 1) / photos.length) * 100));
+      }
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      const sanitizedTitle = gallery.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      a.download = `${sanitizedTitle}_memories.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Bulk download failed:", error);
+      alert("Failed to download gallery. Please try again.");
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
+
   if (loading || !gallery) return <LoadingScreen message="Unlocking memories..." />;
 
   return (
     <PageWrapper>
       <div className="flex flex-col space-y-4 mb-12 text-center">
-        <div className="flex justify-center">
-           <Badge label="Revealed" />
+        <div className="flex justify-between items-center w-full px-4 md:px-0">
+          <div className="w-28" /> {/* spacer for symmetry */}
+          <Badge label="Revealed" />
+          <div className="w-28 flex justify-end">
+            {photos.length > 0 && (
+              <button
+                onClick={handleDownloadAll}
+                disabled={downloadingAll}
+                className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-full font-bold text-[10px] uppercase tracking-widest flex items-center space-x-1.5 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                <span>{downloadingAll ? `Zipping (${downloadProgress}%)` : 'Download All'}</span>
+              </button>
+            )}
+          </div>
         </div>
         <div>
           <h2 className="text-5xl font-serif italic text-white/90">{gallery.title}</h2>
@@ -409,32 +478,37 @@ export default function GalleryView() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+      <div className="columns-2 md:columns-3 gap-4 space-y-4 [column-fill:_balance] box-border">
         <AnimatePresence>
-          {photos.map((photo, i) => (
-            <motion.div
-              key={photo.id}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: i * 0.05 }}
-              onClick={() => { setSelectedIndex(i); setConfirmDelete(false); }}
-              className="relative aspect-[3/4] bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer"
-            >
-              <img 
-                src={getThumbnailUrl(photo.storagePath)} 
-                className="w-full h-full object-cover transition-all duration-700 group-hover:scale-105" 
-                loading="lazy" 
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent p-4 flex flex-col justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                 <p className="text-xs text-accent font-serif italic">
-                   {contributors[photo.contributorId]?.nickname || "Guest"}
-                 </p>
-                 <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-1">
-                    {format(photo.createdAt.toDate(), "h:mm a")}
-                 </p>
-              </div>
-            </motion.div>
-          ))}
+          {photos.map((photo, i) => {
+            const isLandscape = photo.width && photo.height ? photo.width > photo.height : false;
+            return (
+              <motion.div
+                key={photo.id}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.05 }}
+                onClick={() => { setSelectedIndex(i); setConfirmDelete(false); }}
+                className={`break-inside-avoid mb-4 relative ${
+                  isLandscape ? "aspect-[4/3]" : "aspect-[3/4]"
+                } bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer`}
+              >
+                <img 
+                  src={getThumbnailUrl(photo.storagePath)} 
+                  className="w-full h-full object-cover transition-all duration-700 group-hover:scale-105" 
+                  loading="lazy" 
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent p-4 flex flex-col justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                   <p className="text-xs text-accent font-serif italic">
+                     {contributors[photo.contributorId]?.nickname || "Guest"}
+                   </p>
+                   <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-1">
+                      {format(photo.createdAt.toDate(), "h:mm a")}
+                   </p>
+                </div>
+              </motion.div>
+            );
+          })}
         </AnimatePresence>
       </div>
 

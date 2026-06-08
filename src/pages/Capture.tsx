@@ -29,6 +29,13 @@ export default function Capture() {
   const [flashEffect, setFlashEffect] = useState(false);
   const [paused, setPaused] = useState(false);
 
+  // Zoom & Focus states
+  const [zoom, setZoom] = useState(1);
+  const [maxZoom, setMaxZoom] = useState(4);
+  const [hasNativeZoom, setHasNativeZoom] = useState(false);
+  const [focusPoint, setFocusPoint] = useState<{ x: number; y: number } | null>(null);
+  const [focusActive, setFocusActive] = useState(false);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -90,6 +97,9 @@ export default function Capture() {
   }, [gallery, contributor]);
 
   const startCamera = async (facing: "environment" | "user") => {
+    // Reset zoom state on new camera stream initialization
+    setZoom(1);
+
     // Stop existing stream first
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
@@ -113,13 +123,23 @@ export default function Capture() {
         // Explicitly play for iOS Safari reliability
         videoRef.current.play().catch(e => console.error("Video play failed:", e));
       }
-      // Feature-detect torch / flashlight support (only available on rear camera)
+      // Feature-detect camera capabilities (torch, native zoom)
       try {
         const track = s.getVideoTracks()[0];
         const caps = track.getCapabilities?.() as any;
         setHasTorch(caps?.torch === true);
+        
+        if (caps?.zoom) {
+          setHasNativeZoom(true);
+          setMaxZoom(caps.zoom.max || 4);
+        } else {
+          setHasNativeZoom(false);
+          setMaxZoom(4);
+        }
       } catch {
         setHasTorch(false);
+        setHasNativeZoom(false);
+        setMaxZoom(4);
       }
     } catch (err) {
       console.error("Camera access denied", err);
@@ -178,6 +198,59 @@ export default function Capture() {
     startCamera(facingMode);
   };
 
+  const handleZoomChange = async (value: number) => {
+    setZoom(value);
+    if (hasNativeZoom && streamRef.current) {
+      const track = streamRef.current.getVideoTracks()[0];
+      if (track) {
+        try {
+          await track.applyConstraints({
+            advanced: [{ zoom: value } as any]
+          });
+        } catch (e) {
+          console.error("Failed to apply native zoom:", e);
+        }
+      }
+    }
+  };
+
+  const handleViewfinderTap = async (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!streamRef.current) return;
+    const track = streamRef.current.getVideoTracks()[0];
+    if (!track) return;
+
+    // Do not trigger focus ring if clicking on overlay control buttons
+    if ((e.target as HTMLElement).closest("button")) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    setFocusPoint({ x, y });
+    setFocusActive(true);
+
+    // Fade out focus ring
+    setTimeout(() => {
+      setFocusActive(false);
+    }, 1000);
+
+    try {
+      const caps = track.getCapabilities?.() as any;
+      if (caps?.focusMode?.includes('single-shot')) {
+        const pointX = x / rect.width;
+        const pointY = y / rect.height;
+        await track.applyConstraints({
+          advanced: [{
+            focusMode: 'single-shot',
+            pointsOfInterest: [{ x: pointX, y: pointY }]
+          } as any]
+        });
+      }
+    } catch (err) {
+      console.warn("Focus constraints failed:", err);
+    }
+  };
+
   const takePhoto = async () => {
     if (!videoRef.current || !canvasRef.current || !gallery || !contributor || capturing) return;
     if (contributor.shotsTaken >= gallery.maxShots) return;
@@ -203,8 +276,8 @@ export default function Capture() {
     let height = video.videoHeight || 480;
 
     // Detect device orientation — if device is landscape but video is portrait, rotate
-    const orientAngle = (window.screen?.orientation?.angle) ?? 0;
-    const isDeviceLandscape = orientAngle === 90 || orientAngle === 270;
+    const orientAngle = (window.screen?.orientation?.angle) ?? (window.orientation as number) ?? 0;
+    const isDeviceLandscape = orientAngle === 90 || orientAngle === 270 || orientAngle === -90 || window.innerWidth > window.innerHeight;
     const isVideoPortrait = height > width;
     const shouldRotate = isDeviceLandscape && isVideoPortrait;
 
@@ -231,14 +304,21 @@ export default function Capture() {
       return;
     }
 
+    // Apply digital zoom if native zoom is not available
+    const zoomRatio = hasNativeZoom ? 1 : zoom;
+    const sourceW = width / zoomRatio;
+    const sourceH = height / zoomRatio;
+    const sourceX = (width - sourceW) / 2;
+    const sourceY = (height - sourceH) / 2;
+
     if (shouldRotate) {
       // Rotate canvas 90° to produce a landscape image
-      const rotDir = orientAngle === 90 ? 1 : -1;
+      const rotDir = (orientAngle === 90 || orientAngle === 270) ? 1 : -1;
       ctx.translate(effectiveW / 2, effectiveH / 2);
       ctx.rotate((rotDir * Math.PI) / 2);
-      ctx.drawImage(video, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
+      ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
     } else {
-      ctx.drawImage(video, 0, 0, effectiveW, effectiveH);
+      ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, 0, 0, effectiveW, effectiveH);
     }
 
     // Turn off flash after capture
@@ -283,6 +363,8 @@ export default function Capture() {
             galleryId: id,
             contributorId: contributor.id,
             storagePath,
+            width: canvas.width,
+            height: canvas.height,
             createdAt: serverTimestamp()
           });
         } catch (err: any) {
@@ -405,7 +487,10 @@ export default function Capture() {
   return (
     <div className="fixed inset-0 h-[100dvh] w-full bg-black z-50 touch-none select-none overflow-hidden">
       {/* Viewport */}
-      <div className="absolute inset-0 bg-black flex items-center justify-center">
+      <div
+        onClick={handleViewfinderTap}
+        className="absolute inset-0 bg-black flex items-center justify-center cursor-pointer"
+      >
         {/* Flash white overlay */}
         <AnimatePresence>
           {flashEffect && (
@@ -421,14 +506,14 @@ export default function Capture() {
 
         {/* Save error toast - shown over camera, dismissable */}
         {error && stream && (
-          <div className="absolute top-24 inset-x-4 z-40 bg-red-950/90 backdrop-blur-md border border-red-500/30 rounded-2xl p-4 flex items-start space-x-3">
+          <div className="absolute top-24 inset-x-4 z-40 bg-red-950/90 backdrop-blur-md border border-red-500/30 rounded-2xl p-4 flex items-start space-x-3 pointer-events-auto">
             <p className="text-red-300 text-xs flex-1 leading-relaxed">{error}</p>
             <button onClick={() => setError(null)} className="text-red-400 text-xs font-bold uppercase tracking-widest shrink-0">Dismiss</button>
           </div>
         )}
         {/* Camera access error - full screen */}
         {error && !stream ? (
-          <div className="p-10 text-center space-y-4">
+          <div className="p-10 text-center space-y-4 pointer-events-auto">
             <p className="text-text-muted">{error}</p>
             <button onClick={() => { setError(null); startCamera(facingMode); }} className="px-6 py-3 bg-white text-black rounded-full font-bold">Try Again</button>
           </div>
@@ -438,7 +523,11 @@ export default function Capture() {
             autoPlay
             playsInline
             muted
-            className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
+            style={{
+              transform: `scale(${!hasNativeZoom ? zoom : 1}) ${facingMode === 'user' ? 'scaleX(-1)' : ''}`,
+              transition: 'transform 0.25s ease-out'
+            }}
+            className="w-full h-full object-cover"
           />
         )}
 
@@ -450,6 +539,28 @@ export default function Capture() {
             ))}
           </div>
         )}
+
+        {/* Focus Ring Overlay */}
+        <AnimatePresence>
+          {focusActive && focusPoint && (
+            <motion.div
+              initial={{ scale: 1.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.8, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              style={{
+                position: "absolute",
+                left: focusPoint.x - 30,
+                top: focusPoint.y - 30,
+                width: 60,
+                height: 60,
+              }}
+              className="border-2 border-accent rounded-full pointer-events-none z-40 flex items-center justify-center"
+            >
+              <div className="w-1.5 h-1.5 bg-accent rounded-full animate-ping" />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Shoot Preview Overlay */}
         <AnimatePresence>
@@ -518,6 +629,25 @@ export default function Capture() {
 
       {/* Shutter Bar Overlay */}
       <div className="absolute bottom-0 inset-x-0 h-[220px] flex flex-col items-center justify-center z-30 pointer-events-none bg-gradient-to-t from-black/80 via-black/40 to-transparent">
+        {/* Zoom controls */}
+        {maxZoom > 1 && (
+          <div className="flex items-center justify-center space-x-4 mb-4 pointer-events-auto">
+            {[1, 2, 4].filter(z => z <= maxZoom).map((z) => (
+              <button
+                key={z}
+                onClick={() => handleZoomChange(z)}
+                className={`w-9 h-9 rounded-full border text-[10px] font-bold flex items-center justify-center transition-all ${
+                  zoom === z
+                    ? 'bg-accent border-accent text-black scale-110'
+                    : 'bg-black/60 border-white/20 text-white/80 active:scale-95'
+                }`}
+              >
+                {z}x
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center justify-center space-x-8 pointer-events-auto">
           {/* Flip camera button */}
           {hasMultipleCameras ? (
