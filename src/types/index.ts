@@ -32,5 +32,7 @@ export interface Photo {
   galleryId: string;
   contributorId: string;
   storagePath: string;
+  width?: number;
+  height?: number;
   createdAt: Timestamp;
 }

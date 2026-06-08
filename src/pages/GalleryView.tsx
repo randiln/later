@@ -456,26 +456,40 @@ export default function GalleryView() {
 
   return (
     <PageWrapper>
-      <div className="flex flex-col space-y-4 mb-12 text-center">
-        <div className="flex justify-between items-center w-full px-4 md:px-0">
-          <div className="w-28" /> {/* spacer for symmetry */}
-          <Badge label="Revealed" />
-          <div className="w-28 flex justify-end">
-            {photos.length > 0 && (
-              <button
-                onClick={handleDownloadAll}
-                disabled={downloadingAll}
-                className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-full font-bold text-[10px] uppercase tracking-widest flex items-center space-x-1.5 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <span>{downloadingAll ? `Zipping (${downloadProgress}%)` : 'Download All'}</span>
-              </button>
-            )}
-          </div>
-        </div>
-        <div>
+      <div className="flex flex-col items-center text-center space-y-6 mb-12">
+        <Badge label="Revealed" />
+        <div className="space-y-3">
           <h2 className="text-5xl font-serif italic text-white/90">{gallery.title}</h2>
-          <p className="text-text-muted text-xs font-medium uppercase tracking-[0.2em] mt-4">Memories from {format(gallery.revealAt.toDate(), "MMMM do, yyyy")}</p>
+          <p className="text-text-muted text-[10px] font-bold uppercase tracking-[0.2em]">
+            Memories from {format(gallery.revealAt.toDate(), "MMMM do, yyyy")}
+          </p>
         </div>
+
+        {photos.length > 0 && (
+          <div className="pt-2">
+            <button
+              onClick={handleDownloadAll}
+              disabled={downloadingAll}
+              className={`px-6 py-3 rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center space-x-2 transition-all duration-300 shadow-md border ${
+                downloadingAll
+                  ? 'bg-accent/20 border-accent/40 text-accent cursor-not-allowed'
+                  : 'bg-white/10 hover:bg-white text-white hover:text-black border-white/10 hover:border-transparent active:scale-95'
+              } cursor-pointer`}
+            >
+              {downloadingAll ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
+                  <span>Zipping ({downloadProgress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Download size={14} />
+                  <span>Download Gallery</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="columns-2 md:columns-3 gap-4 space-y-4 [column-fill:_balance] box-border">

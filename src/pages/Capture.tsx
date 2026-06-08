@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db, logFirestoreError, OperationType } from "../lib/firebase";
@@ -22,7 +22,7 @@ export default function Capture() {
   const [previewLandscape, setPreviewLandscape] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [flashEnabled, setFlashEnabled] = useState(true);
+  const [flashEnabled, setFlashEnabled] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
@@ -73,12 +73,6 @@ export default function Capture() {
       logFirestoreError(error, OperationType.GET, `galleries/${id}/contributors/${contributorId}`);
     });
 
-    // Check for multiple cameras
-    navigator.mediaDevices.enumerateDevices().then(devices => {
-      const videoInputs = devices.filter(d => d.kind === "videoinput");
-      setHasMultipleCameras(videoInputs.length > 1);
-    }).catch(() => {});
-
     startCamera("environment");
 
     return () => {
@@ -123,6 +117,11 @@ export default function Capture() {
         // Explicitly play for iOS Safari reliability
         videoRef.current.play().catch(e => console.error("Video play failed:", e));
       }
+      // Check for multiple cameras now that camera permission has been granted
+      navigator.mediaDevices.enumerateDevices().then(devices => {
+        const videoInputs = devices.filter(d => d.kind === "videoinput");
+        setHasMultipleCameras(videoInputs.length > 1);
+      }).catch(() => {});
       // Feature-detect camera capabilities (torch, native zoom)
       try {
         const track = s.getVideoTracks()[0];
@@ -277,7 +276,10 @@ export default function Capture() {
 
     // Detect device orientation — if device is landscape but video is portrait, rotate
     const orientAngle = (window.screen?.orientation?.angle) ?? (window.orientation as number) ?? 0;
-    const isDeviceLandscape = orientAngle === 90 || orientAngle === 270 || orientAngle === -90 || window.innerWidth > window.innerHeight;
+    let normAngle = orientAngle % 360;
+    if (normAngle < 0) normAngle += 360;
+
+    const isDeviceLandscape = normAngle === 90 || normAngle === 270 || window.innerWidth > window.innerHeight;
     const isVideoPortrait = height > width;
     const shouldRotate = isDeviceLandscape && isVideoPortrait;
 
@@ -312,8 +314,10 @@ export default function Capture() {
     const sourceY = (height - sourceH) / 2;
 
     if (shouldRotate) {
-      // Rotate canvas 90° to produce a landscape image
-      const rotDir = (orientAngle === 90 || orientAngle === 270) ? 1 : -1;
+      // Rotate canvas to produce a landscape image
+      // If normAngle is 270 (landscape right), rotate 90 degrees clockwise (rotDir = 1)
+      // Otherwise (landscape left 90, or default), rotate 90 degrees counter-clockwise (rotDir = -1)
+      const rotDir = normAngle === 270 ? 1 : -1;
       ctx.translate(effectiveW / 2, effectiveH / 2);
       ctx.rotate((rotDir * Math.PI) / 2);
       ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
@@ -596,9 +600,21 @@ export default function Capture() {
 
         {/* UI Overlays */}
         <div className="absolute top-0 inset-x-0 p-8 flex justify-between items-start pointer-events-none z-30">
-          <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 pointer-events-auto">
-            <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
-            <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+          <div className="flex items-center space-x-3 pointer-events-auto">
+            {/* Flip camera button */}
+            {hasMultipleCameras && (
+              <button
+                onClick={flipCamera}
+                disabled={!!preview || capturing}
+                className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
+              >
+                <SwitchCamera size={18} className="text-white/60" />
+              </button>
+            )}
+            <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10">
+              <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
+              <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+            </div>
           </div>
 
           <div className="flex items-center space-x-3 pointer-events-auto">
@@ -648,20 +664,7 @@ export default function Capture() {
           </div>
         )}
 
-        <div className="flex items-center justify-center space-x-8 pointer-events-auto">
-          {/* Flip camera button */}
-          {hasMultipleCameras ? (
-            <button
-              onClick={flipCamera}
-              disabled={!!preview || capturing}
-              className="w-14 h-14 bg-white/5 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
-            >
-              <SwitchCamera size={20} className="text-white/60" />
-            </button>
-          ) : (
-            <div className="w-14" /> /* spacer */
-          )}
-
+        <div className="flex items-center justify-center pointer-events-auto">
           {/* Shutter button */}
           <div className="flex flex-col items-center space-y-3">
             <button
@@ -676,9 +679,6 @@ export default function Capture() {
               Capture
             </p>
           </div>
-
-          {/* Spacer for symmetry */}
-          <div className="w-14" />
         </div>
 
         {/* Contributor Label */}
