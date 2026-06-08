@@ -275,13 +275,39 @@ export default function Capture() {
     let height = video.videoHeight || 480;
 
     // Detect device orientation — if device is landscape but video is portrait, rotate
-    const orientAngle = (window.screen?.orientation?.angle) ?? (window.orientation as number) ?? 0;
+    let orientAngle = 0;
+    if (window.screen?.orientation) {
+      orientAngle = window.screen.orientation.angle ?? 0;
+    } else if (typeof window.orientation === 'number') {
+      const rawAngle = window.orientation;
+      // Normalize iOS window.orientation: 90 is landscape-left (top left), -90/270 is landscape-right (top right)
+      // Standardize to match screen.orientation.angle: 90 is landscape-right, 270 is landscape-left
+      if (rawAngle === 90) orientAngle = 270;
+      else if (rawAngle === -90 || rawAngle === 270) orientAngle = 90;
+      else orientAngle = rawAngle;
+    }
+
     let normAngle = orientAngle % 360;
     if (normAngle < 0) normAngle += 360;
 
     const isDeviceLandscape = normAngle === 90 || normAngle === 270 || window.innerWidth > window.innerHeight;
     const isVideoPortrait = height > width;
     const shouldRotate = isDeviceLandscape && isVideoPortrait;
+
+    console.log("Photo capture diagnostics:", {
+      videoWidth: width,
+      videoHeight: height,
+      rawScreenAngle: window.screen?.orientation?.angle,
+      rawWindowOrientation: window.orientation,
+      normalizedAngle: normAngle,
+      isDeviceLandscape,
+      isVideoPortrait,
+      shouldRotate,
+      canvasWidth: shouldRotate ? height : width,
+      canvasHeight: shouldRotate ? width : height,
+      zoom,
+      hasNativeZoom
+    });
 
     // For rotation, swap the effective dimensions
     let effectiveW = shouldRotate ? height : width;
@@ -315,9 +341,9 @@ export default function Capture() {
 
     if (shouldRotate) {
       // Rotate canvas to produce a landscape image
-      // If normAngle is 270 (landscape right), rotate 90 degrees clockwise (rotDir = 1)
-      // Otherwise (landscape left 90, or default), rotate 90 degrees counter-clockwise (rotDir = -1)
-      const rotDir = normAngle === 270 ? 1 : -1;
+      // If normAngle is 90 (landscape right), rotate 90 degrees clockwise (rotDir = 1)
+      // Otherwise (landscape left 270, or default), rotate 90 degrees counter-clockwise (rotDir = -1)
+      const rotDir = normAngle === 90 ? 1 : -1;
       ctx.translate(effectiveW / 2, effectiveH / 2);
       ctx.rotate((rotDir * Math.PI) / 2);
       ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
