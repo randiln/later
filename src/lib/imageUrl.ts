@@ -18,7 +18,8 @@ const BUCKET = "gallery-photos";
  * Optimised for fast loading: small dimensions, moderate quality, WebP format.
  */
 export function getThumbnailUrl(storagePath: string): string {
-  return `${supabaseUrl}/storage/v1/render/image/public/${BUCKET}/${storagePath}?width=400&quality=70&format=webp`;
+  // Use raw public URL. Supabase Image Transformation (/render/image) is a paid-tier feature.
+  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
 }
 
 /**
@@ -26,7 +27,8 @@ export function getThumbnailUrl(storagePath: string): string {
  * High quality for detail viewing, but still compressed vs raw.
  */
 export function getFullSizeUrl(storagePath: string): string {
-  return `${supabaseUrl}/storage/v1/render/image/public/${BUCKET}/${storagePath}?width=1600&quality=80&format=webp`;
+  // Use raw public URL. Supabase Image Transformation (/render/image) is a paid-tier feature.
+  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
 }
 
 /**
