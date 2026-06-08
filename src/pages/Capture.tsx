@@ -278,24 +278,35 @@ export default function Capture() {
         const storagePath = await uploadPhoto(blob, id, contributor.id);
 
         // Save the storage path to Firestore
-        await addDoc(collection(db, "galleries", id, "photos"), {
-          galleryId: id,
-          contributorId: contributor.id,
-          storagePath,
-          createdAt: serverTimestamp()
-        });
+        try {
+          await addDoc(collection(db, "galleries", id, "photos"), {
+            galleryId: id,
+            contributorId: contributor.id,
+            storagePath,
+            createdAt: serverTimestamp()
+          });
+        } catch (err: any) {
+          console.error("Firestore photo creation failed", err);
+          throw new Error(err.code === 'permission-denied'
+            ? "Permission denied: Failed to save photo metadata. The gallery may not have started yet, or is already closed."
+            : `Failed to save photo metadata: ${err.message || err.code}`);
+        }
 
-        await updateDoc(doc(db, "galleries", id, "contributors", contributor.id), {
-          shotsTaken: increment(1)
-        });
+        try {
+          await updateDoc(doc(db, "galleries", id, "contributors", contributor.id), {
+            shotsTaken: increment(1)
+          });
+        } catch (err: any) {
+          console.error("Firestore contributor update failed", err);
+          throw new Error(err.code === 'permission-denied'
+            ? "Permission denied: Failed to increment shot count. Your contributor session might be invalid."
+            : `Failed to increment shot count: ${err.message || err.code}`);
+        }
       } catch (error: any) {
         console.error("Save process failed", error);
         if (!mountedRef.current) return;
         setPreview(null);
-        const errorMessage = error?.code === 'permission-denied'
-          ? "Permission denied. The gallery may be closed."
-          : (error?.message || "Failed to save photo. Please try again.");
-        setError(errorMessage);
+        setError(error.message || "Failed to save photo. Please try again.");
       } finally {
         if (mountedRef.current) setCapturing(false);
       }
