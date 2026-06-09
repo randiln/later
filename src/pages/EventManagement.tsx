@@ -85,12 +85,15 @@ export default function EventManagement() {
       return;
     }
 
-    console.log("Proceeding with deletion...");
+    const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= new Date();
+    const fnName = hasRevealed ? 'deleteGallery' : 'deleteEvent';
+
+    console.log(`Proceeding with deletion calling ${fnName}...`);
     setDeletingGallery(true);
     try {
-      const deleteGalleryFn = httpsCallable(functions, 'deleteGallery');
-      console.log("Calling deleteGallery Cloud Function...");
-      const res = await deleteGalleryFn({ galleryId: id });
+      const deleteFn = httpsCallable(functions, fnName);
+      console.log(`Calling ${fnName} Cloud Function...`);
+      const res = await deleteFn({ galleryId: id });
       console.log("Cloud Function response:", res);
       navigate("/dashboard");
     } catch (err: any) {

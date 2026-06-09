@@ -61,18 +61,17 @@ async function deleteSubcollection(
 }
 
 /**
- * HTTPS-callable function that fully deletes a gallery, including:
+ * HTTPS-callable function that fully deletes an event, including:
  * - All photos in Supabase Storage
  * - The `/photos` and `/contributors` Firestore subcollections
  * - The gallery document itself
  *
- * If storage deletion partially fails, undeleted paths are written to the
- * root-level `cleanup_queue` collection for later reconciliation.
+ * Checks that the gallery has not been revealed yet.
  *
  * @remarks
  * Requires the caller to be authenticated and to be the gallery's creator.
  */
-export const deleteGallery = onCall(
+export const deleteEvent = onCall(
   {
     memory: '512MiB',
     timeoutSeconds: 120,
@@ -82,7 +81,7 @@ export const deleteGallery = onCall(
     if (!request.auth) {
       throw new HttpsError(
         'unauthenticated',
-        'You must be signed in to delete a gallery.'
+        'You must be signed in to delete an event.'
       );
     }
 
@@ -100,7 +99,7 @@ export const deleteGallery = onCall(
     const gallerySnap = await galleryRef.get();
 
     if (!gallerySnap.exists) {
-      throw new HttpsError('not-found', 'Gallery not found.');
+      throw new HttpsError('not-found', 'Event not found.');
     }
 
     const galleryData = gallerySnap.data()!;
@@ -108,22 +107,22 @@ export const deleteGallery = onCall(
     if (request.auth.uid !== galleryData.creatorId) {
       throw new HttpsError(
         'permission-denied',
-        'Only the gallery creator can delete this gallery.'
+        'Only the event creator can delete this event.'
       );
     }
 
-    // --- Verify that the gallery IS already revealed ---
+    // --- Verify that the event is NOT yet revealed ---
     const revealAt = galleryData.revealAt as admin.firestore.Timestamp;
     const isRevealed = galleryData.status === 'revealed' || revealAt.toDate() <= new Date();
 
-    if (!isRevealed) {
+    if (isRevealed) {
       throw new HttpsError(
         'failed-precondition',
-        'Cannot delete an event that has not been revealed yet. Use deleteEvent instead.'
+        'Cannot delete an event that has already been revealed. Use deleteGallery instead.'
       );
     }
 
-    logger.info(`deleteGallery: Deleting gallery ${galleryId} after reveal.`);
+    logger.info(`deleteEvent: Deleting event ${galleryId} before reveal.`);
 
     // --- Delete files from Supabase Storage (Robust folder cleanup) ---
     const supabase = getSupabaseClient();
@@ -136,7 +135,7 @@ export const deleteGallery = onCall(
         .list(galleryId);
 
       if (rootError) {
-        logger.error(`deleteGallery: Failed to list root items for gallery ${galleryId}`, rootError);
+        logger.error(`deleteEvent: Failed to list root items for gallery ${galleryId}`, rootError);
       } else if (rootItems && rootItems.length > 0) {
         const filesToDelete: string[] = [];
 
@@ -151,7 +150,7 @@ export const deleteGallery = onCall(
               .list(`${galleryId}/${item.name}`);
 
             if (subError) {
-              logger.error(`deleteGallery: Failed to list items in folder ${galleryId}/${item.name}`, subError);
+              logger.error(`deleteEvent: Failed to list items in folder ${galleryId}/${item.name}`, subError);
             } else if (subItems) {
               for (const subItem of subItems) {
                 filesToDelete.push(`${galleryId}/${item.name}/${subItem.name}`);
@@ -165,7 +164,7 @@ export const deleteGallery = onCall(
 
         // Delete all collected files in batches
         if (filesToDelete.length > 0) {
-          logger.info(`deleteGallery: Attempting to delete ${filesToDelete.length} files from Supabase for gallery ${galleryId}`);
+          logger.info(`deleteEvent: Attempting to delete ${filesToDelete.length} files from Supabase for gallery ${galleryId}`);
           for (let i = 0; i < filesToDelete.length; i += STORAGE_DELETE_BATCH_SIZE) {
             const batch = filesToDelete.slice(i, i + STORAGE_DELETE_BATCH_SIZE);
             const { error } = await supabase.storage
@@ -174,7 +173,7 @@ export const deleteGallery = onCall(
 
             if (error) {
               logger.error(
-                `deleteGallery: Failed to delete storage batch starting at index ${i} for gallery ${galleryId}`,
+                `deleteEvent: Failed to delete storage batch starting at index ${i} for gallery ${galleryId}`,
                 error
               );
               failedPaths.push(...batch);
@@ -194,11 +193,11 @@ export const deleteGallery = onCall(
         });
 
         logger.warn(
-          `deleteGallery: ${failedPaths.length} paths written to cleanup_queue for gallery ${galleryId}.`
+          `deleteEvent: ${failedPaths.length} paths written to cleanup_queue for gallery ${galleryId}.`
         );
       }
     } catch (err) {
-      logger.error(`deleteGallery: Exception during storage cleanup for gallery ${galleryId}`, err);
+      logger.error(`deleteEvent: Exception during storage cleanup for gallery ${galleryId}`, err);
     }
 
     // Reference photos collection for Firestore subcollection cleanup
@@ -211,7 +210,7 @@ export const deleteGallery = onCall(
     // --- Delete the gallery document ---
     await galleryRef.delete();
 
-    logger.info(`deleteGallery: Successfully deleted gallery ${galleryId}.`);
+    logger.info(`deleteEvent: Successfully deleted event ${galleryId}.`);
 
     return { success: true };
   }
