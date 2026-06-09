@@ -93,7 +93,7 @@ service cloud.firestore {
 
         // Primary: status field (fast path, set by Cloud Function)
         // Fallback: timestamp comparison (source of truth)
-        allow read: if galleryStatus() == 'revealed' || isRevealed();
+        allow read: if galleryStatus() == 'revealed' || isRevealed() || (isVerified() && getGallery(galleryId).creatorId == request.auth.uid);
         allow create: if (galleryStatus() == 'active' || (hasStarted() && !isRevealed()))
           && incomingData().galleryId == galleryId
           && incomingData().contributorId is string
