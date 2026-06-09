@@ -805,7 +805,7 @@ export default function Capture() {
 
           <div className="flex items-center justify-center pointer-events-auto">
             {/* Shutter button */}
-            <div className="flex flex-col items-center space-y-3">
+            <div className="flex flex-col items-center">
               <button
                 disabled={!!preview || capturing || shotsLeft <= 0}
                 onClick={takePhoto}
@@ -814,9 +814,6 @@ export default function Capture() {
                 <div className="w-full h-full bg-white rounded-full transition-all group-active:scale-90 group-active:bg-accent" />
                 <div className="absolute -inset-4 border border-accent/0 rounded-full group-active:border-accent/40 group-active:scale-110 transition-all duration-500" />
               </button>
-              <p className="text-[10px] uppercase tracking-[0.3em] text-text-muted font-bold ml-[0.3em]" style={iconStyle}>
-                Capture
-              </p>
             </div>
           </div>
 

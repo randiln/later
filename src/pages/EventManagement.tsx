@@ -236,7 +236,7 @@ export default function EventManagement() {
            </p>
         </div>
 
-        {/* Danger Zone — Delete Gallery */}
+        {/* Danger Zone — Delete Event/Gallery */}
         <div className="pt-8 pb-4 border-t border-white/5">
           <p className="text-[10px] uppercase tracking-[0.2em] text-red-400/60 font-bold mb-4">Danger Zone</p>
           <button
@@ -251,10 +251,10 @@ export default function EventManagement() {
             <Trash2 size={16} />
             <span>
               {deletingGallery
-                ? "Deleting everything..."
+                ? (hasRevealed ? "Deleting gallery..." : "Deleting event...")
                 : confirmDeleteGallery
-                  ? "Tap again to permanently delete"
-                  : "Delete Gallery"}
+                  ? (hasRevealed ? "Tap again to permanently delete gallery" : "Tap again to permanently delete event")
+                  : (hasRevealed ? "Delete Gallery" : "Delete Event")}
             </span>
           </button>
         </div>
