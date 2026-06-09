@@ -71,25 +71,35 @@ export default function EventManagement() {
   };
 
   const handleDeleteGallery = async () => {
+    console.log("handleDeleteGallery called. id:", id, "deletingGallery:", deletingGallery, "confirmDeleteGallery:", confirmDeleteGallery);
     if (!id || deletingGallery) return;
 
     if (!confirmDeleteGallery) {
+      console.log("Setting confirmDeleteGallery to true");
       setConfirmDeleteGallery(true);
       // Auto-reset after 3 seconds if not confirmed
-      setTimeout(() => setConfirmDeleteGallery(false), 3000);
+      setTimeout(() => {
+        console.log("Auto-resetting confirmDeleteGallery to false");
+        setConfirmDeleteGallery(false);
+      }, 3000);
       return;
     }
 
+    console.log("Proceeding with deletion...");
     setDeletingGallery(true);
     try {
       const deleteGalleryFn = httpsCallable(functions, 'deleteGallery');
-      await deleteGalleryFn({ galleryId: id });
+      console.log("Calling deleteGallery Cloud Function...");
+      const res = await deleteGalleryFn({ galleryId: id });
+      console.log("Cloud Function response:", res);
       navigate("/dashboard");
-    } catch (err) {
+    } catch (err: any) {
       console.warn("Cloud function deletion failed, attempting client-side fallback deletion...", err);
       try {
         // 1. Delete all photos (Firestore docs + Supabase files)
+        console.log("Fetching photos snapshot...");
         const photosSnap = await getDocs(collection(db, "galleries", id, "photos"));
+        console.log(`Deleting ${photosSnap.size} photos...`);
         await Promise.all(photosSnap.docs.map(async (photoDoc) => {
           const storagePath = photoDoc.data().storagePath;
           if (storagePath) {
@@ -103,15 +113,20 @@ export default function EventManagement() {
         }));
 
         // 2. Delete all contributors
+        console.log("Fetching contributors snapshot...");
         const contribSnap = await getDocs(collection(db, "galleries", id, "contributors"));
+        console.log(`Deleting ${contribSnap.size} contributors...`);
         await Promise.all(contribSnap.docs.map(d => deleteDoc(d.ref)));
 
         // 3. Delete the gallery doc itself
+        console.log("Deleting gallery document...");
         await deleteDoc(doc(db, "galleries", id));
 
+        console.log("Deletion complete, navigating to dashboard...");
         navigate("/dashboard");
-      } catch (clientErr) {
+      } catch (clientErr: any) {
         console.error("Client-side fallback deletion failed:", clientErr);
+        alert(`Deletion failed.\n\nCloud Function error: ${err.message || err}\n\nClient fallback error: ${clientErr.message || clientErr}`);
         setDeletingGallery(false);
         setConfirmDeleteGallery(false);
       }
