@@ -609,6 +609,7 @@ export default function Capture() {
 
   const isViewportLandscape = window.innerWidth > window.innerHeight;
   const rotation = isViewportLandscape ? (viewportOrientationAngle === 270 ? -90 : viewportOrientationAngle === 90 ? 90 : 0) : 0;
+  const isLandscape = deviceOrientationAngle === 90 || deviceOrientationAngle === 270;
 
   const innerContainerStyle: React.CSSProperties = isViewportLandscape ? {
     position: 'absolute',
@@ -744,7 +745,6 @@ export default function Capture() {
           {/* UI Overlays */}
           <div className="absolute top-0 inset-x-0 p-8 flex justify-between items-start pointer-events-none z-30">
             <div className="flex items-center space-x-3 pointer-events-auto">
-              {/* Flip camera button */}
               {hasMultipleCameras && (
                 <button
                   onClick={flipCamera}
@@ -754,10 +754,12 @@ export default function Capture() {
                   <SwitchCamera size={18} className="text-white/60" style={iconStyle} />
                 </button>
               )}
-              <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10" style={iconStyle}>
-                <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
-                <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
-              </div>
+              {!isLandscape && (
+                <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10" style={iconStyle}>
+                  <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
+                  <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center space-x-3 pointer-events-auto">
@@ -822,12 +824,51 @@ export default function Capture() {
             </div>
           </div>
 
-          {/* Contributor Label */}
-          <div className="absolute bottom-6 flex items-center space-x-2 pointer-events-auto" style={iconStyle}>
-            <div className="w-1 h-1 bg-accent rounded-full" />
-            <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-60 italic">Contributor: {contributor.nickname}</p>
-          </div>
+          {/* Contributor Label — only shown in portrait */}
+          {!isLandscape && (
+            <div className="absolute bottom-6 flex items-center space-x-2 pointer-events-auto" style={iconStyle}>
+              <div className="w-1 h-1 bg-accent rounded-full" />
+              <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-60 italic">Contributor: {contributor.nickname}</p>
+            </div>
+          )}
         </div>
+
+        {/* Landscape Overlays */}
+        {isLandscape && (
+          <div className="absolute inset-0 pointer-events-none z-30">
+            {/* Contributor Label at Bottom-Left of screen */}
+            <div
+              className={`absolute pointer-events-auto ${
+                deviceOrientationAngle === 90 ? 'left-8 bottom-24' : 'right-8 top-24'
+              }`}
+            >
+              <div
+                className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-2 shadow-lg"
+                style={iconStyle}
+              >
+                <div className="w-1.5 h-1.5 bg-accent rounded-full" />
+                <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-80 italic">
+                  Contributor: {contributor.nickname}
+                </p>
+              </div>
+            </div>
+
+            {/* Shots Remaining at Bottom-Right of screen */}
+            <div
+              className={`absolute pointer-events-auto ${
+                deviceOrientationAngle === 90 ? 'left-8 top-24' : 'right-8 bottom-24'
+              }`}
+            >
+              <div
+                className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 shadow-lg"
+                style={iconStyle}
+              >
+                <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
+                <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <canvas ref={canvasRef} className="hidden" />
