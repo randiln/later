@@ -835,36 +835,26 @@ export default function Capture() {
 
         {/* Landscape Overlays */}
         {isLandscape && (
-          <div className="absolute inset-0 pointer-events-none z-30">
-            {/* Contributor Label at Bottom-Left of screen */}
+          <div className="absolute inset-0 pointer-events-none z-30 flex items-center justify-center">
             <div
-              className={`absolute pointer-events-auto ${
-                deviceOrientationAngle === 90 ? 'left-8 bottom-24' : 'right-8 top-24'
-              }`}
+              className="pointer-events-auto flex items-center space-x-3 shadow-2xl"
+              style={{
+                transform: `rotate(${-deviceOrientationAngle}deg) translateY(calc(50vmin - 48px))`,
+                transition: 'transform 0.3s ease-in-out',
+              }}
             >
-              <div
-                className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-2 shadow-lg"
-                style={iconStyle}
-              >
+              {/* Contributor Label */}
+              <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-2">
                 <div className="w-1.5 h-1.5 bg-accent rounded-full" />
                 <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-80 italic">
                   Contributor: {contributor.nickname}
                 </p>
               </div>
-            </div>
 
-            {/* Shots Remaining at Bottom-Right of screen */}
-            <div
-              className={`absolute pointer-events-auto ${
-                deviceOrientationAngle === 90 ? 'left-8 top-24' : 'right-8 bottom-24'
-              }`}
-            >
-              <div
-                className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 shadow-lg"
-                style={iconStyle}
-              >
+              {/* Shots Remaining */}
+              <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-3">
                 <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
-                <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+                <p className="text-xl font-serif italic text-accent leading-none">{shotsLeft} / {gallery.maxShots}</p>
               </div>
             </div>
           </div>
