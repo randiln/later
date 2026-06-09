@@ -30,23 +30,28 @@ export default function Capture() {
   const [paused, setPaused] = useState(false);
 
   // Orientation states & logic
-  const [activeOrientation, setActiveOrientation] = useState<number>(0);
+  const [deviceOrientationAngle, setDeviceOrientationAngle] = useState<number>(0);
+  const [viewportOrientationAngle, setViewportOrientationAngle] = useState<number>(0);
+  const hasAccelerometerFired = useRef(false);
 
-  const updateOrientation = useCallback(() => {
-    const isViewportLandscape = window.innerWidth > window.innerHeight;
-    if (isViewportLandscape) {
-      let orientAngle = 0;
-      if (window.screen?.orientation) {
-        orientAngle = window.screen.orientation.angle ?? 0;
-      } else if (typeof window.orientation === 'number') {
-        const rawAngle = window.orientation;
-        if (rawAngle === 90) orientAngle = 270;
-        else if (rawAngle === -90 || rawAngle === 270) orientAngle = 90;
-        else orientAngle = rawAngle;
-      }
-      const normAngle = ((orientAngle % 360) + 360) % 360;
-      setActiveOrientation(normAngle);
+  const updateViewportOrientation = useCallback(() => {
+    let orientAngle = 0;
+    if (window.screen?.orientation) {
+      orientAngle = window.screen.orientation.angle ?? 0;
+    } else if (typeof window.orientation === 'number') {
+      const rawAngle = window.orientation;
+      if (rawAngle === 90) orientAngle = 270;
+      else if (rawAngle === -90 || rawAngle === 270) orientAngle = 90;
+      else orientAngle = rawAngle;
     }
+    const normAngle = ((orientAngle % 360) + 360) % 360;
+    setViewportOrientationAngle(normAngle);
+
+    // Initial fallback: if accelerometer hasn't fired yet, follow the viewport
+    setDeviceOrientationAngle(prev => {
+      if (hasAccelerometerFired.current) return prev;
+      return normAngle;
+    });
   }, []);
 
   const handleDeviceOrientation = useCallback((event: DeviceOrientationEvent) => {
@@ -54,33 +59,33 @@ export default function Capture() {
     const gamma = event.gamma;
     if (beta === null || gamma === null) return;
 
-    const isViewportLandscape = window.innerWidth > window.innerHeight;
-    if (isViewportLandscape) {
-      updateOrientation();
-    } else {
-      const threshold = 20;
-      if (Math.abs(beta) > threshold || Math.abs(gamma) > threshold) {
-        let newAngle = 0;
-        if (Math.abs(beta) >= Math.abs(gamma)) {
-          newAngle = beta >= 0 ? 0 : 180;
-        } else {
-          newAngle = gamma >= 0 ? 90 : 270;
-        }
-        setActiveOrientation(newAngle);
-      }
+    hasAccelerometerFired.current = true;
+    
+    // Check gravity vector magnitude in XY plane to ignore flat orientations
+    const magnitude = Math.sqrt(beta * beta + gamma * gamma);
+    if (magnitude >= 25) {
+      let angle = Math.round(Math.atan2(-gamma, beta) * (180 / Math.PI));
+      if (angle < 0) angle += 360;
+      const step = (Math.round(angle / 90) * 90) % 360;
+      let physicalOrientation = 0;
+      if (step === 90) physicalOrientation = 270;
+      else if (step === 270) physicalOrientation = 90;
+      else physicalOrientation = step;
+      
+      setDeviceOrientationAngle(physicalOrientation);
     }
-  }, [updateOrientation]);
+  }, []);
 
   // Listen to viewport orientation changes
   useEffect(() => {
-    window.addEventListener("resize", updateOrientation);
-    window.addEventListener("orientationchange", updateOrientation);
-    updateOrientation();
+    window.addEventListener("resize", updateViewportOrientation);
+    window.addEventListener("orientationchange", updateViewportOrientation);
+    updateViewportOrientation();
     return () => {
-      window.removeEventListener("resize", updateOrientation);
-      window.removeEventListener("orientationchange", updateOrientation);
+      window.removeEventListener("resize", updateViewportOrientation);
+      window.removeEventListener("orientationchange", updateViewportOrientation);
     };
-  }, [updateOrientation]);
+  }, [updateViewportOrientation]);
 
   // Request accelerometer permission on first user gesture and set up listener
   useEffect(() => {
@@ -379,7 +384,7 @@ export default function Capture() {
     let height = video.videoHeight || 480;
 
     // Detect device orientation — if device is landscape but video is portrait, rotate
-    const normAngle = activeOrientation;
+    const normAngle = deviceOrientationAngle;
     const isDeviceLandscape = normAngle === 90 || normAngle === 270;
     const isVideoPortrait = height > width;
     const shouldRotate = isDeviceLandscape && isVideoPortrait;
@@ -387,7 +392,7 @@ export default function Capture() {
     console.log("Photo capture diagnostics:", {
       videoWidth: width,
       videoHeight: height,
-      activeOrientation: normAngle,
+      deviceOrientationAngle: normAngle,
       isDeviceLandscape,
       isVideoPortrait,
       shouldRotate,
@@ -603,7 +608,7 @@ export default function Capture() {
   }
 
   const isViewportLandscape = window.innerWidth > window.innerHeight;
-  const rotation = isViewportLandscape ? (activeOrientation === 270 ? -90 : activeOrientation === 90 ? 90 : 0) : 0;
+  const rotation = isViewportLandscape ? (viewportOrientationAngle === 270 ? -90 : viewportOrientationAngle === 90 ? 90 : 0) : 0;
 
   const innerContainerStyle: React.CSSProperties = isViewportLandscape ? {
     position: 'absolute',
@@ -621,7 +626,7 @@ export default function Capture() {
   };
 
   const iconStyle: React.CSSProperties = {
-    transform: `rotate(${-activeOrientation}deg)`,
+    transform: `rotate(${-deviceOrientationAngle}deg)`,
     transition: 'transform 0.3s ease-in-out',
   };
 
