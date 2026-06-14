@@ -18,6 +18,8 @@ import EventManagement from "./pages/EventManagement";
 import Join from "./pages/Join";
 import Capture from "./pages/Capture";
 import GalleryView from "./pages/GalleryView";
+import RequestCustomRoom from "./pages/RequestCustomRoom";
+import AdminPanel from "./pages/AdminPanel";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -59,6 +61,8 @@ function AnimatedRoutes({ user }: { user: User | null }) {
           <Route path="/dashboard" element={user ? <Dashboard /> : <Navigate to="/" />} />
           <Route path="/create" element={user ? <CreateEvent /> : <Navigate to="/" />} />
           <Route path="/event/:id" element={user ? <EventManagement /> : <Navigate to="/" />} />
+          <Route path="/request-custom" element={user ? <RequestCustomRoom /> : <Navigate to="/" />} />
+          <Route path="/admin" element={user ? <AdminPanel /> : <Navigate to="/" />} />
 
           {/* Contributor Routes */}
           <Route path="/join/:id" element={<Join />} />

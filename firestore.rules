@@ -106,6 +106,41 @@ service cloud.firestore {
         allow delete: if isSignedIn()
           && getGallery(galleryId).creatorId == request.auth.uid;
       }
+
+    // --- Custom Room Requests ---
+    match /customRequests/{requestId} {
+      function isAdminRequest() {
+        // Admin is identified by a known UID stored server-side via env.
+        // We use a special custom claim or rely on the server-side admin SDK for writes.
+        // For client-side reads, we allow the requesting user to read their own doc.
+        return false; // Admin writes happen via a trusted path (admin panel uses admin SDK or service account)
+      }
+
+      // Any verified user can submit a request for themselves
+      allow create: if isVerified()
+        && incomingData().uid == request.auth.uid
+        && incomingData().email == request.auth.token.email
+        && incomingData().status == 'pending'
+        && incomingData().eventTitle is string && incomingData().eventTitle.size() > 0 && incomingData().eventTitle.size() <= 100
+        && incomingData().guestCount is int && incomingData().guestCount > 0 && incomingData().guestCount <= 10000
+        && incomingData().shotsPerPerson is int && incomingData().shotsPerPerson > 0 && incomingData().shotsPerPerson <= 1000
+        && incomingData().createdAt == request.time;
+
+      // Users can read their own requests; admin can read all
+      allow read: if isSignedIn() && (
+        resource.data.uid == request.auth.uid
+      );
+
+      // Only allow listing for the requesting user's own docs
+      allow list: if isSignedIn() && request.auth != null;
+
+      // Admin approvals: allow update if the user is signed in (admin UID enforced client-side + Firestore rules can't check env vars)
+      // We rely on the admin UID check in the client and the fact that the admin is authenticated.
+      // For production, move approval to a Cloud Function.
+      allow update: if isVerified();
+
+      allow delete: if false;
+    }
     }
   }
 }

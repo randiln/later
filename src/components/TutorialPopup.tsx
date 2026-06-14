@@ -40,7 +40,7 @@ export default function TutorialPopup({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: "spring", duration: 0.5 }}
-            className="relative w-full max-w-md bg-zinc-950/95 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl p-4 sm:p-5 md:p-6 flex flex-col justify-between max-h-[96dvh] gap-y-4"
+            className="relative w-full max-w-lg bg-zinc-950/95 border border-white/10 rounded-[2rem] overflow-hidden shadow-2xl p-4 sm:p-5 md:p-6 flex flex-col justify-between max-h-[96dvh] gap-y-4"
           >
             {/* Header (.lw-header) */}
             <div className="flex items-center justify-between">
@@ -109,7 +109,7 @@ export default function TutorialPopup({
             </div>
 
             {/* Features (.lw-features) - 2x2 Grid for compact viewport fitting */}
-            <div className="grid grid-cols-2 gap-2.5">
+            <div className="grid grid-cols-2 gap-3">
               {/* Feature 1 */}
               <div className="flex items-start gap-2.5 p-2 rounded-xl bg-white/[0.01] border border-white/[0.03]">
                 <div className="p-1.5 bg-white/5 border border-white/10 rounded-lg shrink-0 text-accent mt-0.5">
@@ -119,9 +119,9 @@ export default function TutorialPopup({
                   <div className="inline-block px-1.5 py-0.5 mb-1 bg-accent/15 border border-accent/30 text-accent text-[8px] uppercase font-bold tracking-wider rounded">
                     {maxShots} shots
                   </div>
-                  <p className="text-[11px] font-semibold text-white/90 leading-tight">A limited roll</p>
-                  <p className="text-[10px] text-text-muted leading-tight mt-0.5">
-                    No retakes, no deleting. Once you shoot, it's locked.
+                  <p className="text-[11px] font-semibold text-white/90 leading-tight">A limited roll — use it wisely</p>
+                  <p className="text-[10px] text-text-muted leading-normal mt-0.5">
+                    You get {maxShots} shots total, just like a disposable camera. <strong className="text-white/80 font-semibold">No retakes and no deleting</strong> — once you take a photo, it's committed. Make each one count.
                   </p>
                 </div>
               </div>
@@ -132,9 +132,9 @@ export default function TutorialPopup({
                   <EyeOff size={14} aria-hidden="true" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold text-white/90 leading-tight">Private vault</p>
-                  <p className="text-[10px] text-text-muted leading-tight mt-0.5">
-                    Every photo is locked until reveal. No peeking!
+                  <p className="text-[11px] font-semibold text-white/90 leading-tight mt-1">Shared Gallery Reveal</p>
+                  <p className="text-[10px] text-text-muted leading-normal mt-0.5">
+                    Every photo goes straight into the vault until the reveal — <strong className="text-white/80 font-semibold">including your own</strong>. Not even the host can peek.
                   </p>
                 </div>
               </div>
@@ -145,9 +145,9 @@ export default function TutorialPopup({
                   <Smartphone size={14} aria-hidden="true" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold text-white/90 leading-tight">Come & go</p>
-                  <p className="text-[10px] text-text-muted leading-tight mt-0.5">
-                    Close tab anytime. Shots are saved automatically.
+                  <p className="text-[11px] font-semibold text-white/90 leading-tight mt-1">Come and go as you like</p>
+                  <p className="text-[10px] text-text-muted leading-normal mt-0.5">
+                    Close the tab, switch apps, lock your phone — your shots are saved. Just reopen the link whenever you're ready to shoot again.
                   </p>
                 </div>
               </div>
@@ -158,9 +158,9 @@ export default function TutorialPopup({
                   <SlidersHorizontal size={14} aria-hidden="true" />
                 </div>
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold text-white/90 leading-tight">Camera controls</p>
-                  <p className="text-[10px] text-text-muted leading-tight mt-0.5">
-                    Focus, 1×/2×/4× zoom, flip lens, toggle flash.
+                  <p className="text-[11px] font-semibold text-white/90 leading-tight mt-1">Camera controls</p>
+                  <p className="text-[10px] text-text-muted leading-normal mt-0.5">
+                    Tap to focus · <strong className="text-white/80 font-semibold">1×/2×/4×</strong> zoom · flip lens · toggle flash
                   </p>
                 </div>
               </div>
