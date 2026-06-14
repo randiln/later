@@ -8,8 +8,9 @@ import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
 import { motion, AnimatePresence } from "motion/react";
-import { LogOut, Zap, ZapOff, SwitchCamera, Camera } from "lucide-react";
+import { LogOut, Zap, ZapOff, SwitchCamera, Camera, HelpCircle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+import TutorialPopup from "../components/TutorialPopup";
 
 export default function Capture() {
   const { id } = useParams<{ id: string }>();
@@ -28,6 +29,7 @@ export default function Capture() {
   const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
   const [flashEffect, setFlashEffect] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
 
   // Orientation states & logic
   const [deviceOrientationAngle, setDeviceOrientationAngle] = useState<number>(0);
@@ -191,6 +193,22 @@ export default function Capture() {
       stopCamera();
     };
   }, [id]);
+
+  // Check if tutorial has been seen yet, only after data finishes loading
+  useEffect(() => {
+    if (loading || !gallery || !id) return;
+    const seen = localStorage.getItem(`later_tutorial_seen_${id}`);
+    if (!seen) {
+      setShowTutorial(true);
+    }
+  }, [loading, gallery, id]);
+
+  const handleCloseTutorial = () => {
+    if (id) {
+      localStorage.setItem(`later_tutorial_seen_${id}`, "true");
+    }
+    setShowTutorial(false);
+  };
 
   // Release the camera once the guest has used all their shots.
   useEffect(() => {
@@ -763,6 +781,12 @@ export default function Capture() {
             </div>
 
             <div className="flex items-center space-x-3 pointer-events-auto">
+              <button
+                onClick={() => setShowTutorial(true)}
+                className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
+              >
+                <HelpCircle size={18} className="text-white/60" style={iconStyle} />
+              </button>
               {/* Flash toggle — only shown on supported devices */}
               {hasTorch && (
                 <button
@@ -862,6 +886,14 @@ export default function Capture() {
       </div>
 
       <canvas ref={canvasRef} className="hidden" />
+
+      <TutorialPopup
+        isOpen={showTutorial}
+        onClose={handleCloseTutorial}
+        maxShots={gallery.maxShots}
+        revealAt={gallery.revealAt.toDate()}
+        galleryTitle={gallery.title}
+      />
     </div>
   );
 }
