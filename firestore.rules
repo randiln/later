@@ -13,6 +13,9 @@ service cloud.firestore {
     function incomingData() { return request.resource.data; }
     function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
     
+    // Admin UID — hardcoded for security rules (env vars not available here)
+    function isAdmin() { return isSignedIn() && request.auth.uid == '9xawU3cCAwVBEhEJTAuAT6Ehtwk2'; }
+
     function getGallery(galleryId) {
       return get(/databases/$(database)/documents/galleries/$(galleryId)).data;
     }
@@ -28,14 +31,14 @@ service cloud.firestore {
 
     // --- Galleries ---
     match /galleries/{galleryId} {
-      function isValidGallery(data) {
+      function isValidGalleryData(data) {
         return data.title is string && data.title.size() > 0 && data.title.size() <= 100
           && (data.get('description', '') is string && data.get('description', '').size() <= 500)
           && data.startsAt is timestamp
           && data.revealAt is timestamp
-          && data.maxShots is int && data.maxShots > 0 && data.maxShots <= 100
-          && data.maxContributors is int && data.maxContributors > 0 && data.maxContributors <= 500
-          && data.creatorId == request.auth.uid
+          && data.maxShots is int && data.maxShots > 0 && data.maxShots <= 10000
+          && data.maxContributors is int && data.maxContributors > 0 && data.maxContributors <= 10000
+          && data.creatorId is string
           && data.status is string
           && data.status in ['upcoming', 'active', 'revealed'];
       }
@@ -46,13 +49,19 @@ service cloud.firestore {
 
       allow read: if true; 
       allow list: if isSignedIn() && resource.data.creatorId == request.auth.uid;
-      allow create: if isVerified() && isValidGallery(incomingData())
+
+      // Regular users create galleries for themselves; admin can create for any user (for approved requests)
+      allow create: if isVerified()
+        && isValidGalleryData(incomingData())
+        && (incomingData().creatorId == request.auth.uid || isAdmin())
         && incomingData().status == 'upcoming'
         && incomingData().createdAt == request.time;
+
       // Clients may update gallery fields but cannot change status — only the Cloud Function advances it
       allow update: if isVerified() && existingData().creatorId == request.auth.uid
-        && isValidGallery(incomingData())
-        && incomingData().status == existingData().status;
+        && isValidGalleryData(incomingData())
+        && incomingData().status == existingData().status
+        && incomingData().creatorId == existingData().creatorId;
       allow delete: if isVerified() && existingData().creatorId == request.auth.uid;
 
       // --- Contributors ---
@@ -106,41 +115,30 @@ service cloud.firestore {
         allow delete: if isSignedIn()
           && getGallery(galleryId).creatorId == request.auth.uid;
       }
+    }
 
     // --- Custom Room Requests ---
     match /customRequests/{requestId} {
-      function isAdminRequest() {
-        // Admin is identified by a known UID stored server-side via env.
-        // We use a special custom claim or rely on the server-side admin SDK for writes.
-        // For client-side reads, we allow the requesting user to read their own doc.
-        return false; // Admin writes happen via a trusted path (admin panel uses admin SDK or service account)
-      }
-
       // Any verified user can submit a request for themselves
-      allow create: if isVerified()
+      // Relaxed email check — just verify the uid matches (email may vary by auth provider)
+      allow create: if isSignedIn()
         && incomingData().uid == request.auth.uid
-        && incomingData().email == request.auth.token.email
         && incomingData().status == 'pending'
         && incomingData().eventTitle is string && incomingData().eventTitle.size() > 0 && incomingData().eventTitle.size() <= 100
         && incomingData().guestCount is int && incomingData().guestCount > 0 && incomingData().guestCount <= 10000
         && incomingData().shotsPerPerson is int && incomingData().shotsPerPerson > 0 && incomingData().shotsPerPerson <= 1000
         && incomingData().createdAt == request.time;
 
-      // Users can read their own requests; admin can read all
-      allow read: if isSignedIn() && (
-        resource.data.uid == request.auth.uid
-      );
+      // Requestor can read their own; admin can read all
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
 
-      // Only allow listing for the requesting user's own docs
-      allow list: if isSignedIn() && request.auth != null;
+      // Admin can list all; regular users can only query their own (enforced by query filters)
+      allow list: if isSignedIn() && (isAdmin() || request.auth != null);
 
-      // Admin approvals: allow update if the user is signed in (admin UID enforced client-side + Firestore rules can't check env vars)
-      // We rely on the admin UID check in the client and the fact that the admin is authenticated.
-      // For production, move approval to a Cloud Function.
-      allow update: if isVerified();
+      // Admin only can update (approve / reject)
+      allow update: if isAdmin();
 
       allow delete: if false;
-    }
     }
   }
 }

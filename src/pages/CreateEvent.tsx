@@ -3,7 +3,7 @@ import { addDoc, collection, serverTimestamp, Timestamp } from "firebase/firesto
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
 import PageWrapper from "../components/PageWrapper";
 import Button from "../components/Button";
-import { ArrowLeft, Sparkles, Crown, ChevronRight, Lock } from "lucide-react";
+import { ArrowLeft, Sparkles, Crown, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -108,16 +108,11 @@ export default function CreateEvent() {
           </div>
         </div>
 
-        {/* Shots per Guest — capped at free limit */}
+        {/* Shots per Guest */}
         <div className="space-y-3 pt-4">
           <div className="flex justify-between items-center px-1">
             <label className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold">Shots per Guest</label>
-            <div className="flex items-center gap-2">
-              {maxShots >= FREE_MAX_SHOTS && (
-                <Lock size={11} className="text-accent opacity-70" />
-              )}
-              <span className="text-accent font-mono font-bold text-lg">{maxShots}</span>
-            </div>
+            <span className="text-accent font-mono font-bold text-lg">{maxShots}</span>
           </div>
           <input
             type="range"
@@ -127,35 +122,13 @@ export default function CreateEvent() {
             value={maxShots}
             onChange={(e) => setMaxShots(Number(e.target.value))}
           />
-          <AnimatePresence>
-            {maxShots >= FREE_MAX_SHOTS && (
-              <motion.button
-                type="button"
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                onClick={() => navigate("/request-custom")}
-                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-accent/5 border border-accent/15 text-left"
-              >
-                <span className="text-[11px] text-accent/80 font-medium">Need more shots per guest?</span>
-                <span className="text-[10px] text-accent font-bold uppercase tracking-wider flex items-center gap-1">
-                  Request custom <ChevronRight size={11} />
-                </span>
-              </motion.button>
-            )}
-          </AnimatePresence>
         </div>
 
-        {/* Guest Capacity — capped at free limit */}
+        {/* Guest Capacity */}
         <div className="space-y-3 pt-4">
           <div className="flex justify-between items-center px-1">
             <label className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold">Guest Capacity</label>
-            <div className="flex items-center gap-2">
-              {maxContributors >= FREE_MAX_CONTRIBUTORS && (
-                <Lock size={11} className="text-accent opacity-70" />
-              )}
-              <span className="text-accent font-mono font-bold text-lg">{maxContributors}</span>
-            </div>
+            <span className="text-accent font-mono font-bold text-lg">{maxContributors}</span>
           </div>
           <input
             type="range"
@@ -165,24 +138,31 @@ export default function CreateEvent() {
             value={maxContributors}
             onChange={(e) => setMaxContributors(Number(e.target.value))}
           />
-          <AnimatePresence>
-            {maxContributors >= FREE_MAX_CONTRIBUTORS && (
-              <motion.button
-                type="button"
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                onClick={() => navigate("/request-custom")}
-                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-accent/5 border border-accent/15 text-left"
-              >
-                <span className="text-[11px] text-accent/80 font-medium">Hosting more than 10 guests?</span>
-                <span className="text-[10px] text-accent font-bold uppercase tracking-wider flex items-center gap-1">
-                  Request custom <ChevronRight size={11} />
-                </span>
-              </motion.button>
-            )}
-          </AnimatePresence>
         </div>
+
+        {/* Single consolidated upsell — appears only when both sliders are fully maxed */}
+        <AnimatePresence>
+          {maxShots >= FREE_MAX_SHOTS && maxContributors >= FREE_MAX_CONTRIBUTORS && (
+            <motion.button
+              type="button"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => navigate("/request-custom")}
+              className="w-full flex items-center gap-4 p-4 rounded-2xl bg-gradient-to-br from-accent/8 to-accent/4 border border-accent/15 text-left hover:border-accent/30 transition-colors group"
+            >
+              <div className="w-9 h-9 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center shrink-0 group-hover:bg-accent/20 transition-colors">
+                <Crown size={15} className="text-accent" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[12px] font-semibold text-white/80">Need more guests or shots?</p>
+                <p className="text-[11px] text-text-muted mt-0.5">Custom rooms are available for larger events — paid.</p>
+              </div>
+              <ChevronRight size={14} className="text-zinc-600 group-hover:text-accent transition-colors shrink-0" />
+            </motion.button>
+          )}
+        </AnimatePresence>
 
         <div className="pt-8 space-y-4">
           {error && (
@@ -201,19 +181,16 @@ export default function CreateEvent() {
         </div>
       </form>
 
-      {/* Custom Room Upsell */}
+      {/* Passive always-visible custom room upsell (subtle) */}
       <button
         onClick={() => navigate("/request-custom")}
-        className="mt-8 w-full p-5 rounded-[2rem] bg-gradient-to-br from-white/[0.03] to-white/[0.01] border border-white/[0.06] flex items-center gap-4 text-left hover:border-accent/20 transition-colors group"
+        className="mt-8 w-full p-4 rounded-[2rem] border border-white/[0.05] flex items-center gap-3 text-left hover:border-white/10 transition-colors group"
       >
-        <div className="w-10 h-10 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center shrink-0 group-hover:bg-accent/20 transition-colors">
-          <Crown size={18} className="text-accent" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-white/80">Hosting a larger event?</p>
-          <p className="text-xs text-text-muted mt-0.5">Custom rooms support more guests and higher shot counts. Paid.</p>
-        </div>
-        <ChevronRight size={16} className="text-zinc-700 group-hover:text-accent transition-colors shrink-0" />
+        <Crown size={15} className="text-zinc-700 group-hover:text-accent transition-colors shrink-0" />
+        <p className="text-xs text-zinc-700 group-hover:text-text-muted transition-colors flex-1">
+          Hosting a larger event? <span className="underline underline-offset-2">Request a custom room</span>
+        </p>
+        <ChevronRight size={13} className="text-zinc-800 group-hover:text-zinc-600 transition-colors shrink-0" />
       </button>
     </PageWrapper>
   );
