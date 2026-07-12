@@ -11,6 +11,17 @@ import { motion, AnimatePresence } from "motion/react";
 import { LogOut, Zap, ZapOff, SwitchCamera, Camera, HelpCircle } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import TutorialPopup from "../components/TutorialPopup";
+import NotificationPrompt from "../components/NotificationPrompt";
+import {
+  canNotify,
+  getPermissionStatus,
+  registerServiceWorker,
+  requestNotificationPermission,
+  scheduleReminders,
+  notifyPhotoTaken,
+  updateShotsCount,
+  cancelReminders,
+} from "../lib/notifications";
 
 export default function Capture() {
   const { id } = useParams<{ id: string }>();
@@ -30,6 +41,8 @@ export default function Capture() {
   const [flashEffect, setFlashEffect] = useState(false);
   const [paused, setPaused] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [showNotifPrompt, setShowNotifPrompt] = useState(false);
+  const notifScheduled = useRef(false);
 
   // Orientation states & logic
   const [deviceOrientationAngle, setDeviceOrientationAngle] = useState<number>(0);
@@ -208,12 +221,74 @@ export default function Capture() {
       localStorage.setItem(`later_tutorial_seen_${id}`, "true");
     }
     setShowTutorial(false);
+
+    // After tutorial closes, check if we should show the notification prompt
+    if (canNotify() && getPermissionStatus() === 'default') {
+      const prompted = localStorage.getItem(`later_notif_prompted_${id}`);
+      if (!prompted) {
+        // Small delay so it doesn't feel like two popups stacking
+        setTimeout(() => setShowNotifPrompt(true), 600);
+      }
+    }
+  };
+
+  // Register SW and auto-schedule if permission already granted
+  useEffect(() => {
+    if (!gallery || !contributor || !id || notifScheduled.current) return;
+
+    registerServiceWorker().then(() => {
+      if (getPermissionStatus() === 'granted') {
+        const shotsLeft = gallery.maxShots - contributor.shotsTaken;
+        if (shotsLeft > 0) {
+          const baseUrl = window.location.origin;
+          scheduleReminders(
+            id,
+            gallery.title,
+            shotsLeft,
+            gallery.revealAt.toDate(),
+            `${baseUrl}/capture/${id}`,
+            `${baseUrl}/gallery/${id}`,
+          );
+          notifScheduled.current = true;
+        }
+      }
+    });
+  }, [gallery, contributor, id]);
+
+  const handleNotifAccept = async () => {
+    setShowNotifPrompt(false);
+    if (id) localStorage.setItem(`later_notif_prompted_${id}`, 'true');
+
+    const granted = await requestNotificationPermission();
+    if (granted && gallery && contributor && id) {
+      const shotsLeft = gallery.maxShots - contributor.shotsTaken;
+      if (shotsLeft > 0) {
+        const baseUrl = window.location.origin;
+        await registerServiceWorker();
+        scheduleReminders(
+          id,
+          gallery.title,
+          shotsLeft,
+          gallery.revealAt.toDate(),
+          `${baseUrl}/capture/${id}`,
+          `${baseUrl}/gallery/${id}`,
+        );
+        notifScheduled.current = true;
+      }
+    }
+  };
+
+  const handleNotifDismiss = () => {
+    setShowNotifPrompt(false);
+    if (id) localStorage.setItem(`later_notif_prompted_${id}`, 'true');
   };
 
   // Release the camera once the guest has used all their shots.
   useEffect(() => {
     if (gallery && contributor && contributor.shotsTaken >= gallery.maxShots) {
       stopCamera();
+      // Cancel notifications when all shots are used
+      if (id) cancelReminders(id);
     }
   }, [gallery, contributor]);
 
@@ -519,6 +594,17 @@ export default function Capture() {
           await updateDoc(doc(db, "galleries", id, "contributors", contributor.id), {
             shotsTaken: increment(1)
           });
+
+          // Notify SW of the photo + update shots count
+          if (id && gallery) {
+            const newShotsLeft = gallery.maxShots - (contributor.shotsTaken + 1);
+            notifyPhotoTaken(id);
+            updateShotsCount(id, newShotsLeft);
+
+            if (newShotsLeft <= 0) {
+              cancelReminders(id);
+            }
+          }
         } catch (err: any) {
           console.error("Firestore contributor update failed", err);
           throw new Error(err.code === 'permission-denied'
@@ -893,6 +979,12 @@ export default function Capture() {
         maxShots={gallery.maxShots}
         revealAt={gallery.revealAt.toDate()}
         galleryTitle={gallery.title}
+      />
+
+      <NotificationPrompt
+        isOpen={showNotifPrompt}
+        onAccept={handleNotifAccept}
+        onDismiss={handleNotifDismiss}
       />
     </div>
   );
