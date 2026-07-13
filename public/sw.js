@@ -48,35 +48,59 @@ self.addEventListener('message', (event) => {
       // Schedule inactivity reminder — only if shots left and capped at 3
       const currentReminderCount = state[galleryId].reminderCount || 0;
       if (shotsLeft > 0 && currentReminderCount < 3 && timeToReveal > 0) {
-        const FIFTEEN_MINUTES = 15 * 60 * 1000;
+        const ONE_MINUTE = 60 * 1000; // 1 minute for testing
         timers[galleryId] = timers[galleryId] || {};
-        timers[galleryId].inactivityTimer = setTimeout(() => {
-          const s = state[galleryId];
-          if (!s || s.shotsLeft <= 0) return;
+        
+        // Wrap in a Promise and pass to event.waitUntil so the browser
+        // absolutely does not kill the Service Worker while we wait.
+        const reminderPromise = new Promise((resolve) => {
+          timers[galleryId].inactivityTimer = setTimeout(() => {
+            const s = state[galleryId];
+            if (!s || s.shotsLeft <= 0) {
+              resolve();
+              return;
+            }
 
-          // Fire the notification
-          showInactivityNotification(galleryId, s);
+            // Fire the notification
+            showInactivityNotification(galleryId, s);
 
-          // Increment count and schedule next if under cap
-          s.reminderCount = (s.reminderCount || 0) + 1;
+            // Increment count and schedule next if under cap
+            s.reminderCount = (s.reminderCount || 0) + 1;
 
-          if (s.reminderCount < 3) {
-            timers[galleryId].inactivityTimer = setTimeout(() => {
-              const s2 = state[galleryId];
-              if (!s2 || s2.shotsLeft <= 0) return;
-              showInactivityNotification(galleryId, s2);
-              s2.reminderCount = (s2.reminderCount || 0) + 1;
+            if (s.reminderCount < 3) {
+              timers[galleryId].inactivityTimer = setTimeout(() => {
+                const s2 = state[galleryId];
+                if (!s2 || s2.shotsLeft <= 0) {
+                  resolve();
+                  return;
+                }
+                showInactivityNotification(galleryId, s2);
+                s2.reminderCount = (s2.reminderCount || 0) + 1;
 
-              if (s2.reminderCount < 3) {
-                timers[galleryId].inactivityTimer = setTimeout(() => {
-                  const s3 = state[galleryId];
-                  if (!s3 || s3.shotsLeft <= 0) return;
-                  showInactivityNotification(galleryId, s3);
-                }, FIFTEEN_MINUTES);
-              }
-            }, FIFTEEN_MINUTES);
-          }
-        }, FIFTEEN_MINUTES);
+                if (s2.reminderCount < 3) {
+                  timers[galleryId].inactivityTimer = setTimeout(() => {
+                    const s3 = state[galleryId];
+                    if (!s3 || s3.shotsLeft <= 0) {
+                      resolve();
+                      return;
+                    }
+                    showInactivityNotification(galleryId, s3);
+                    resolve();
+                  }, ONE_MINUTE);
+                } else {
+                  resolve();
+                }
+              }, ONE_MINUTE);
+            } else {
+              resolve();
+            }
+          }, ONE_MINUTE);
+        });
+
+        // This is the magic trick to keep the SW alive!
+        if (event.waitUntil) {
+          event.waitUntil(reminderPromise);
+        }
       }
       break;
     }
