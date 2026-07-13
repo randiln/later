@@ -19,6 +19,13 @@ export default function EventManagement() {
   const [copied, setCopied] = useState(false);
   const [confirmDeleteGallery, setConfirmDeleteGallery] = useState(false);
   const [deletingGallery, setDeletingGallery] = useState(false);
+  // Tick every 30s so time-based conditions (isLive, hasRevealed) stay current
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(tick);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -136,8 +143,8 @@ export default function EventManagement() {
     }
   };
 
-  const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= new Date();
-  const isLive = gallery.status === 'active' || (gallery.startsAt.toDate() <= new Date() && !hasRevealed);
+  const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= now;
+  const isLive = gallery.status === 'active' || (gallery.startsAt.toDate() <= now && !hasRevealed);
 
   return (
     <PageWrapper>
@@ -169,15 +176,19 @@ export default function EventManagement() {
         {!hasRevealed && (
           <button
             onClick={() => navigate(`/join/${id}`)}
-            className="w-full p-6 bg-white text-zinc-950 rounded-[2.5rem] flex items-center justify-between shadow-2xl shadow-accent/5 active:scale-[0.98] transition-transform"
+            className="w-full p-5 bg-card border border-white/[0.08] rounded-[2rem] flex items-center gap-4 text-left active:scale-[0.98] transition-transform group"
           >
-            <div className="flex flex-col items-start">
-              <span className="text-xl font-serif italic">Join as Contributor</span>
-              <span className="text-zinc-950/60 text-xs font-medium uppercase tracking-widest mt-1">
-                {isLive ? "Open the camera and start shooting" : "Camera opens when the event starts"}
-              </span>
+            <div className="w-11 h-11 rounded-2xl bg-accent/10 border border-accent/20 flex items-center justify-center shrink-0">
+              <Camera size={20} className="text-accent" />
             </div>
-            <Camera size={28} />
+            <div className="flex-1 min-w-0">
+              <p className="text-base font-serif italic text-white/90">
+                {isLive ? "Join as Contributor" : "Preview as Contributor"}
+              </p>
+              <p className="text-[10px] text-text-muted font-medium uppercase tracking-widest mt-0.5">
+                {isLive ? "Open the camera" : "Event starts " + gallery.startsAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
           </button>
         )}
 
