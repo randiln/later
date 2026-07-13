@@ -19,7 +19,7 @@ import {
   requestNotificationPermission,
   scheduleReminders,
   notifyPhotoTaken,
-  updateShotsCount,
+  notifyPageVisible,
   cancelReminders,
 } from "../lib/notifications";
 
@@ -43,6 +43,7 @@ export default function Capture() {
   const [showTutorial, setShowTutorial] = useState(false);
   const [showNotifPrompt, setShowNotifPrompt] = useState(false);
   const notifScheduled = useRef(false);
+  const reminderCount = useRef(0);
 
   // Orientation states & logic
   const [deviceOrientationAngle, setDeviceOrientationAngle] = useState<number>(0);
@@ -222,17 +223,28 @@ export default function Capture() {
     }
     setShowTutorial(false);
 
-    // After tutorial closes, check if we should show the notification prompt
-    if (canNotify() && getPermissionStatus() === 'default') {
-      const prompted = localStorage.getItem(`later_notif_prompted_${id}`);
-      if (!prompted) {
-        // Small delay so it doesn't feel like two popups stacking
-        setTimeout(() => setShowNotifPrompt(true), 600);
-      }
-    }
+    // Check notification prompt eligibility after tutorial closes
+    maybeShowNotifPrompt();
   };
 
-  // Register SW and auto-schedule if permission already granted
+  function maybeShowNotifPrompt() {
+    if (!canNotify()) return;
+    if (getPermissionStatus() !== 'default') return;
+    const prompted = localStorage.getItem(`later_notif_prompted_${id}`);
+    if (prompted) return;
+    setTimeout(() => setShowNotifPrompt(true), 600);
+  }
+
+  // Show notification prompt independently of tutorial on subsequent visits
+  useEffect(() => {
+    if (loading || !gallery || !id) return;
+    const tutorialSeen = localStorage.getItem(`later_tutorial_seen_${id}`);
+    if (!tutorialSeen) return; // tutorial will trigger it via handleCloseTutorial
+    maybeShowNotifPrompt();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, gallery, id]);
+
+  // Register SW + auto-schedule if permission already granted
   useEffect(() => {
     if (!gallery || !contributor || !id || notifScheduled.current) return;
 
@@ -248,11 +260,44 @@ export default function Capture() {
             gallery.revealAt.toDate(),
             `${baseUrl}/capture/${id}`,
             `${baseUrl}/gallery/${id}`,
+            reminderCount.current,
           );
           notifScheduled.current = true;
         }
       }
     });
+  }, [gallery, contributor, id]);
+
+  // Visibilitychange — the key to reliable notifications:
+  // Tell the SW to start the inactivity timer when user backgrounds the tab,
+  // and cancel it when they return.
+  useEffect(() => {
+    if (!gallery || !contributor || !id) return;
+    if (getPermissionStatus() !== 'granted') return;
+
+    const onVisibilityChange = () => {
+      const shotsLeft = gallery.maxShots - contributor.shotsTaken;
+      if (document.visibilityState === 'hidden') {
+        if (shotsLeft > 0) {
+          const baseUrl = window.location.origin;
+          scheduleReminders(
+            id,
+            gallery.title,
+            shotsLeft,
+            gallery.revealAt.toDate(),
+            `${baseUrl}/capture/${id}`,
+            `${baseUrl}/gallery/${id}`,
+            reminderCount.current,
+          );
+        }
+      } else {
+        // User came back — cancel inactivity timers
+        notifyPageVisible(id);
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, [gallery, contributor, id]);
 
   const handleNotifAccept = async () => {
@@ -272,6 +317,7 @@ export default function Capture() {
           gallery.revealAt.toDate(),
           `${baseUrl}/capture/${id}`,
           `${baseUrl}/gallery/${id}`,
+          reminderCount.current,
         );
         notifScheduled.current = true;
       }
@@ -595,11 +641,11 @@ export default function Capture() {
             shotsTaken: increment(1)
           });
 
-          // Notify SW of the photo + update shots count
+          // Notify SW: photo taken, update shot count, reset inactivity timer
           if (id && gallery) {
             const newShotsLeft = gallery.maxShots - (contributor.shotsTaken + 1);
-            notifyPhotoTaken(id);
-            updateShotsCount(id, newShotsLeft);
+            notifyPhotoTaken(id, newShotsLeft);
+            reminderCount.current = 0; // reset reminder count on new photo
 
             if (newShotsLeft <= 0) {
               cancelReminders(id);

@@ -165,8 +165,8 @@ export default function EventManagement() {
           </button>
         )}
 
-        {/* Join as Contributor — shown when event is live */}
-        {isLive && (
+        {/* Join as Contributor — shown any time before reveal */}
+        {!hasRevealed && (
           <button
             onClick={() => navigate(`/join/${id}`)}
             className="w-full p-6 bg-white text-zinc-950 rounded-[2.5rem] flex items-center justify-between shadow-2xl shadow-accent/5 active:scale-[0.98] transition-transform"
@@ -174,7 +174,7 @@ export default function EventManagement() {
             <div className="flex flex-col items-start">
               <span className="text-xl font-serif italic">Join as Contributor</span>
               <span className="text-zinc-950/60 text-xs font-medium uppercase tracking-widest mt-1">
-                Open the camera and start shooting
+                {isLive ? "Open the camera and start shooting" : "Camera opens when the event starts"}
               </span>
             </div>
             <Camera size={28} />
