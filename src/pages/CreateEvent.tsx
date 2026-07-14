@@ -3,7 +3,7 @@ import { addDoc, collection, serverTimestamp, Timestamp } from "firebase/firesto
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
 import PageWrapper from "../components/PageWrapper";
 import Button from "../components/Button";
-import { ArrowLeft, Sparkles, Crown, ChevronRight } from "lucide-react";
+import { ArrowLeft, Sparkles, Crown, ChevronRight, Settings2, ChevronDown, ChevronUp } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -20,6 +20,13 @@ export default function CreateEvent() {
   const [maxShots, setMaxShots] = useState(12);
   const [maxContributors, setMaxContributors] = useState(10);
   const [error, setError] = useState<string | null>(null);
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [notifEnabled, setNotifEnabled] = useState(true);
+  const [notifInactivity, setNotifInactivity] = useState(10);
+  const [notifRecurrent, setNotifRecurrent] = useState(false);
+  const [notifBeforeEnd, setNotifBeforeEnd] = useState(5);
+  const [notifReveal, setNotifReveal] = useState(true);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,6 +60,13 @@ export default function CreateEvent() {
         maxShots: Number(maxShots),
         maxContributors: Number(maxContributors),
         status: 'upcoming',
+        notificationSettings: {
+          enabled: notifEnabled,
+          inactivityInterval: notifInactivity,
+          recurrentInactivity: notifRecurrent,
+          beforeEndReminder: notifBeforeEnd,
+          notifyOnReveal: notifReveal,
+        },
         createdAt: serverTimestamp(),
       });
       navigate("/dashboard");
@@ -163,6 +177,96 @@ export default function CreateEvent() {
             </motion.button>
           )}
         </AnimatePresence>
+
+        {/* Advanced Settings */}
+        <div className="pt-4">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-text-muted hover:text-white transition-colors py-2"
+          >
+            <Settings2 size={16} />
+            <span className="text-xs font-semibold uppercase tracking-widest">Advanced Settings</span>
+            {showAdvanced ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+          
+          <AnimatePresence>
+            {showAdvanced && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="pt-6 space-y-6 border-t border-white/5 mt-4">
+                  {/* Master Toggle */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-white/90">Notify Users</p>
+                      <p className="text-xs text-text-muted mt-1">Send browser push notifications to guests</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" className="sr-only peer" checked={notifEnabled} onChange={(e) => setNotifEnabled(e.target.checked)} />
+                      <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent"></div>
+                    </label>
+                  </div>
+
+                  {notifEnabled && (
+                    <div className="space-y-5 bg-white/[0.02] p-5 rounded-2xl border border-white/5">
+                      <div className="space-y-2">
+                        <label className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold ml-1">Inactivity Reminder</label>
+                        <select
+                          className="w-full bg-card border border-white/5 rounded-xl p-3 text-xs font-medium focus:border-accent outline-none appearance-none"
+                          value={notifInactivity}
+                          onChange={(e) => setNotifInactivity(Number(e.target.value))}
+                        >
+                          <option value={0}>Off</option>
+                          <option value={5}>After 5 minutes</option>
+                          <option value={10}>After 10 minutes</option>
+                          <option value={15}>After 15 minutes</option>
+                          <option value={30}>After 30 minutes</option>
+                        </select>
+                      </div>
+
+                      {notifInactivity > 0 && (
+                        <div className="flex items-center justify-between pl-1">
+                          <span className="text-xs text-text-muted font-medium">Recurrent reminders</span>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" className="sr-only peer" checked={notifRecurrent} onChange={(e) => setNotifRecurrent(e.target.checked)} />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+                          </label>
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        <label className="text-[10px] uppercase tracking-[0.2em] text-text-muted font-bold ml-1">Event Ending Reminder</label>
+                        <select
+                          className="w-full bg-card border border-white/5 rounded-xl p-3 text-xs font-medium focus:border-accent outline-none appearance-none"
+                          value={notifBeforeEnd}
+                          onChange={(e) => setNotifBeforeEnd(Number(e.target.value))}
+                        >
+                          <option value={0}>Off</option>
+                          <option value={5}>5 minutes before</option>
+                          <option value={10}>10 minutes before</option>
+                          <option value={15}>15 minutes before</option>
+                          <option value={30}>30 minutes before</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-center justify-between pl-1">
+                        <span className="text-xs text-text-muted font-medium">Notify on Reveal</span>
+                        <label className="relative inline-flex items-center cursor-pointer">
+                          <input type="checkbox" className="sr-only peer" checked={notifReveal} onChange={(e) => setNotifReveal(e.target.checked)} />
+                          <div className="w-9 h-5 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
         <div className="pt-8 space-y-4">
           {error && (

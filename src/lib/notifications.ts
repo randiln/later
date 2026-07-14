@@ -1,6 +1,7 @@
 /**
  * Browser notification helpers for Later.
  */
+import type { GalleryNotificationSettings } from '../types';
 
 let swRegistration: ServiceWorkerRegistration | null = null;
 
@@ -108,7 +109,8 @@ export function scheduleReminders(
   revealAt: Date,
   captureUrl: string,
   galleryUrl: string,
-  reminderCount = 0,
+  reminderCount: number = 0,
+  settings?: GalleryNotificationSettings
 ): void {
   postToSW({
     type: 'SCHEDULE_REMINDERS',
@@ -120,6 +122,7 @@ export function scheduleReminders(
       captureUrl,
       galleryUrl,
       reminderCount,
+      settings,
     },
   });
 }

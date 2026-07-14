@@ -2,6 +2,14 @@ import { Timestamp } from "firebase/firestore";
 
 export type GalleryStatus = 'upcoming' | 'active' | 'revealed';
 
+export interface GalleryNotificationSettings {
+  enabled: boolean;
+  inactivityInterval: number;
+  recurrentInactivity: boolean;
+  beforeEndReminder: number;
+  notifyOnReveal: boolean;
+}
+
 export interface Gallery {
   id: string;
   creatorId: string;
@@ -16,6 +24,7 @@ export interface Gallery {
   welcomeMessage?: string;
   coverImageUrl?: string;
   createdAt: Timestamp;
+  notificationSettings?: GalleryNotificationSettings;
 }
 
 export interface Contributor {

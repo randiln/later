@@ -261,6 +261,7 @@ export default function Capture() {
             `${baseUrl}/capture/${id}`,
             `${baseUrl}/gallery/${id}`,
             reminderCount.current,
+            gallery.notificationSettings,
           );
           notifScheduled.current = true;
         }
@@ -288,6 +289,7 @@ export default function Capture() {
             `${baseUrl}/capture/${id}`,
             `${baseUrl}/gallery/${id}`,
             reminderCount.current,
+            gallery.notificationSettings,
           );
         }
       } else {
@@ -318,6 +320,7 @@ export default function Capture() {
           `${baseUrl}/capture/${id}`,
           `${baseUrl}/gallery/${id}`,
           reminderCount.current,
+          gallery.notificationSettings,
         );
         notifScheduled.current = true;
       }
