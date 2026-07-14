@@ -21,6 +21,8 @@ import {
   notifyPhotoTaken,
   notifyPageVisible,
   cancelReminders,
+  isIOS,
+  isPWA,
 } from "../lib/notifications";
 
 export default function Capture() {
@@ -228,8 +230,13 @@ export default function Capture() {
   };
 
   function maybeShowNotifPrompt() {
-    if (!canNotify()) return;
-    if (getPermissionStatus() !== 'default') return;
+    const isIosBrowser = isIOS() && !isPWA();
+    
+    if (!isIosBrowser) {
+      if (!canNotify()) return;
+      if (getPermissionStatus() !== 'default') return;
+    }
+
     const prompted = localStorage.getItem(`later_notif_prompted_${id}`);
     if (prompted) return;
     setTimeout(() => setShowNotifPrompt(true), 600);
