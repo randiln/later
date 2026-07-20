@@ -1,44 +1,58 @@
-# Technical Architecture: Later (Disposable Event Camera)
+﻿# Technical Architecture: Later (Disposable Event Camera)
 
-This document provides a comprehensive technical overview of the **Later** application—a time-locked, shared disposable camera app designed for events. It covers the high-level system components, database schemas, security rule enforcements, front-end mechanics, camera handling, and the design aesthetics.
+> Last updated: July 2026. This document reflects the current production state of the codebase.
+
+**Later** is a time-locked, shared disposable camera web app for events. Guests shoot photos that are sealed in a vault until a pre-set reveal time — no peeking, no deletes. This document covers the full system: backend services, data models, security rules, Cloud Functions, front-end architecture, camera mechanics, and the design system.
 
 ---
 
 ## 1. High-Level System Architecture
 
-**Later** is structured as a serverless single-page application (SPA) using a dual-cloud backend system (**Firebase** + **Supabase**) to decouple real-time structured state from heavy binary assets:
+Later is a serverless SPA with a **tri-cloud backend**: Firebase (auth, database, functions), Supabase (binary photo storage), and Vercel (static hosting + CDN). Structured state lives in Firestore; raw binary assets live in Supabase.
 
 ```mermaid
 graph TD
-    Client[React SPA client - Vite/Vercel]
-    Auth[Firebase Authentication - Google OAuth]
-    Firestore[(Cloud Firestore - DB)]
-    Storage[(Supabase Storage - Photo Assets)]
+    Client["React SPA — Vite / Vercel"]
+    Auth["Firebase Auth — Google OAuth"]
+    Firestore[("Cloud Firestore — Structured DB")]
+    Functions["Firebase Cloud Functions v2"]
+    Storage[("Supabase Object Storage — gallery-photos bucket")]
+    SW["Service Worker — sw.js"]
 
     Client -->|Google Sign-In| Auth
-    Client -->|Real-time subscriptions & writes| Firestore
-    Client -->|Compress & upload raw JPEG binary| Storage
-    Client -->|Save public asset URLs| Firestore
-    
-    subgraph "Backend Security"
-        FirestoreRules[firestore.rules - Rule Engine]
-        FirestoreRules -.->|Enforces time-lock & limits| Firestore
-    end
+    Client -->|Real-time onSnapshot listeners| Firestore
+    Client -->|Upload JPEG binary| Storage
+    Client -->|httpsCallable — deleteEvent / deleteGallery| Functions
+    Client -->|postMessage — schedule reminders| SW
+    Functions -->|Admin SDK writes| Firestore
+    Functions -->|Service Role Key deletes| Storage
+    Functions -->|Scheduled status transitions| Firestore
 ```
 
 ### Key Technologies
-- **Core SPA Framework**: [React 19](file:///c:/Users/randi/Personal/Projects/Later/package.json#L26) & [TypeScript](file:///c:/Users/randi/Personal/Projects/Later/package.json#L39)
-- **Build System & Tooling**: [Vite 6](file:///c:/Users/randi/Personal/Projects/Later/package.json#L30) with [Tailwind CSS v4](file:///c:/Users/randi/Personal/Projects/Later/package.json#L37)
-- **Database & Auth**: [Firebase v12 SDK](file:///c:/Users/randi/Personal/Projects/Later/package.json#L22) (Authentication & Cloud Firestore)
-- **Media Hosting**: [Supabase JS Client](file:///c:/Users/randi/Personal/Projects/Later/package.json#L15) (Supabase Object Storage)
-- **Routing**: [React Router DOM v7](file:///c:/Users/randi/Personal/Projects/Later/package.json#L28)
-- **Animations**: [Motion (Framer Motion) v12](file:///c:/Users/randi/Personal/Projects/Later/package.json#L24)
+
+| Layer | Technology | Version |
+|---|---|---|
+| SPA Framework | React | 19 |
+| Language | TypeScript | ~5.8 |
+| Build System | Vite | 6 |
+| Styling | Tailwind CSS v4 | 4.1 |
+| Routing | React Router DOM | 7 |
+| Animations | Motion (Framer Motion) | 12 |
+| Auth & Database | Firebase SDK | 12 |
+| Cloud Functions | Firebase Functions v2 | (Node.js runtime) |
+| Photo Storage | Supabase JS Client | 2 |
+| QR Codes | qrcode.react | 4 |
+| Zip Downloads | JSZip | 3 |
+| Date Utilities | date-fns | 4 |
+| Icons | Lucide React | latest |
+| Merge Utilities | clsx / tailwind-merge | latest |
 
 ---
 
 ## 2. Database Architecture & Data Models
 
-The structured database is managed in **Cloud Firestore** under a relational hierarchical structure. The schema mapping is detailed in [firebase-blueprint.json](file:///c:/Users/randi/Personal/Projects/Later/firebase-blueprint.json) and represented by interfaces in [src/types/index.ts](file:///c:/Users/randi/Personal/Projects/Later/src/types/index.ts).
+All structured state lives in **Cloud Firestore**. Interfaces are defined in `src/types/index.ts`. The schema is cross-referenced in `firebase-blueprint.json`.
 
 ### 2.1 Entity Relationships
 
@@ -48,195 +62,454 @@ erDiagram
     GALLERY ||--o{ CONTRIBUTOR : "has"
     GALLERY ||--o{ PHOTO : "contains"
     CONTRIBUTOR ||--o{ PHOTO : "captures"
+    CREATOR ||--o{ CUSTOM_REQUEST : "submits"
+    GALLERY ||--o{ CLEANUP_QUEUE : "produces on delete failure"
 ```
 
 ### 2.2 Schemas
 
-#### Creator Profile (`/users/{userId}`)
-Represents registered users who can initialize and manage disposable camera events.
-- **`email`** (string, email): Creator's Google account email.
-- **`createdAt`** (timestamp): Registration timestamp.
+#### Creator Profile — `/users/{userId}`
 
-#### Gallery (`/galleries/{galleryId}`)
-An event instance representing the shared camera vault.
-- **`creatorId`** (string): Foreign key pointing to the owning Creator's UID.
-- **`title`** (string): The title/name of the event (e.g. "The Miller Wedding").
-- **`description`** (string, optional): Extra details/notes.
-- **`startsAt`** (timestamp): The exact date and time the camera becomes active for shooting.
-- **`revealAt`** (timestamp): The exact date and time the photo vault unlocks.
-- **`maxShots`** (integer): Max shots allowed per unique contributor.
-- **`maxContributors`** (integer): The capacity limit of unique guests for the event.
-- **`createdAt`** (timestamp): Gallery instantiation timestamp.
-- *Styling/Customization (Reserved)*: `themeColor`, `welcomeMessage`, `coverImageUrl`.
+| Field | Type | Notes |
+|---|---|---|
+| `email` | string | Creator's Google account email |
+| `createdAt` | timestamp | Registration time |
 
-#### Contributor (`/galleries/{galleryId}/contributors/{contributorId}`)
-A guest who joins a specific gallery to capture photos.
-- **`galleryId`** (string): Parent gallery reference.
-- **`nickname`** (string): User-selected identifier (maximum 20 characters).
-- **`sessionId`** (string): Randomly generated client token stored in client local storage to prevent session spoofing.
-- **`shotsTaken`** (integer): Accumulator monitoring the amount of shots fired. Defaults to `0`.
-- **`createdAt`** (timestamp): Time of entry.
+#### Gallery — `/galleries/{galleryId}`
 
-#### Photo (`/galleries/{galleryId}/photos/{photoId}`)
-A photo asset metadata record.
-- **`galleryId`** (string): Parent gallery reference.
-- **`contributorId`** (string): ID of the contributor who took the photo.
-- **`imageUrl`** (string): Public asset URL retrieved from Supabase Storage.
-- **`createdAt`** (timestamp): Capture timestamp.
+| Field | Type | Notes |
+|---|---|---|
+| `creatorId` | string | UID of the owning creator |
+| `title` | string | Event name (max 100 chars) |
+| `description` | string? | Optional extra details (max 500 chars) |
+| `startsAt` | timestamp | When the camera opens for contributors |
+| `revealAt` | timestamp | When the photo vault unlocks |
+| `maxShots` | int | Max shots per contributor |
+| `maxContributors` | int | Maximum guest capacity |
+| `status` | upcoming / active / revealed | **Lifecycle state. Written ONLY by the `advanceGalleryStatus` Cloud Function. Clients can never modify this field.** |
+| `notificationSettings` | GalleryNotificationSettings? | Per-gallery push notification config |
+| `createdAt` | timestamp | Gallery creation time |
+| `themeColor` | string? | Reserved |
+| `welcomeMessage` | string? | Reserved |
+| `coverImageUrl` | string? | Reserved |
+
+**`GalleryNotificationSettings` sub-type:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | boolean | Master switch |
+| `inactivityInterval` | number | Minutes of inactivity before reminding |
+| `recurrentInactivity` | boolean | Whether to repeat the inactivity reminder |
+| `beforeEndReminder` | number | Minutes before reveal to send a reminder |
+| `notifyOnReveal` | boolean | Send notification when vault unlocks |
+
+#### Contributor — `/galleries/{galleryId}/contributors/{contributorId}`
+
+| Field | Type | Notes |
+|---|---|---|
+| `galleryId` | string | Parent gallery reference |
+| `nickname` | string | User-chosen name (max 20 chars) |
+| `sessionId` | string | Client token stored in `localStorage` as `session_{galleryId}`. Prevents session hijacking. |
+| `shotsTaken` | int | Shot accumulator. Enforced to increment by exactly 1 per write. |
+| `createdAt` | timestamp | Join time |
+
+#### Photo — `/galleries/{galleryId}/photos/{photoId}`
+
+> **Breaking change from earlier versions:** `imageUrl` (public URL) has been replaced by `storagePath` (relative path inside the bucket). URL construction is centralised in `src/lib/imageUrl.ts`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `galleryId` | string | Parent gallery reference |
+| `contributorId` | string | Who took the shot |
+| `storagePath` | string | Relative Supabase path: `{galleryId}/{contributorId}/{timestamp}.jpg` |
+| `width` | int? | Canvas pixel width at capture |
+| `height` | int? | Canvas pixel height at capture |
+| `createdAt` | timestamp | Capture time |
+
+#### Custom Room Request — `/customRequests/{requestId}`
+
+Used by the paid custom room workflow. Submitted by creators, reviewed by admin.
+
+| Field | Type | Notes |
+|---|---|---|
+| `uid` | string | Submitting creator's UID |
+| `email` | string | Creator's email |
+| `eventTitle` | string | Requested event name |
+| `startsAt` | timestamp | Requested start time |
+| `revealAt` | timestamp | Requested reveal time |
+| `guestCount` | int | Expected number of guests |
+| `shotsPerPerson` | int | Shots per contributor requested |
+| `status` | pending / approved / rejected | Review state |
+| `galleryId` | string? | Set on approval — references the created gallery |
+| `adminNote` | string? | Internal note |
+| `reviewedAt` | timestamp? | When the admin acted |
+| `createdAt` | timestamp | Submission time |
+
+#### Cleanup Queue — `/cleanup_queue/{itemId}`
+
+An internal retry queue. Written by `deleteEvent` / `deleteGallery` when a Supabase Storage batch delete partially fails. Processed weekly by `reconcileOrphanedAssets`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `paths` | string[] | Storage paths that failed deletion |
+| `galleryId` | string | Source gallery |
+| `attempts` | int | Retry counter |
+| `flaggedForReview` | boolean | Set to `true` after 3 failed attempts |
+| `createdAt` | timestamp | Queue entry time |
 
 ---
 
 ## 3. Security & Time-Lock Enforcement
 
-The signature security characteristic of **Later** is that the "no-peeking" mechanism is enforced **server-side** at the database security layer, rather than relying on client-side state filters.
+The core promise of Later — **nobody can peek before reveal** — is enforced at the database security layer. Client-side state is never trusted for access control.
 
-### 3.1 Security Policies (`firestore.rules`)
-Firestore operations are protected by rules defined in [firestore.rules](file:///c:/Users/randi/Personal/Projects/Later/firestore.rules):
+### 3.1 Firestore Security Rules (`firestore.rules`)
 
-1. **Vault Time-Lock (Private Reads)**:
-   ```javascript
-   match /photos/{photoId} {
-     function isRevealed() {
-       return get(/databases/$(database)/documents/galleries/$(galleryId)).data.revealAt <= request.time;
-     }
-     allow read: if isRevealed();
-   }
-   ```
-   *Implication*: No contributor, guest, or even creator can query or retrieve document data or image URLs inside the `/photos` collection until the clock ticks past `revealAt`.
+**Key helper functions:**
 
-2. **Active Shooting Windows**:
-   ```javascript
-   function hasStarted() {
-     return get(/databases/$(database)/documents/galleries/$(galleryId)).data.startsAt <= request.time;
-   }
-   allow create: if hasStarted() && !isRevealed() && ...
-   ```
-   *Implication*: Photo submissions are rejected if the event has not started or if the gallery has already been revealed.
+```javascript
+function isSignedIn()   { return request.auth != null; }
+function isVerified()   { return isSignedIn() && request.auth.token.email_verified == true; }
+function isAdmin()      { return isSignedIn() && request.auth.uid == '<ADMIN_UID>'; }
+function getGallery(id) { return get(/databases/$(database)/documents/galleries/$(id)).data; }
+```
 
-3. **Incremental Shot Integrity**:
-   Guests cannot freely edit their profile details. They are only allowed to increment their count by exactly `1` per capture:
-   ```javascript
-   allow update: if isValidContributor(incomingData())
-     && incomingData().sessionId == existingData().sessionId
-     && incomingData().createdAt == existingData().createdAt
-     && (
-       incomingData().shotsTaken == existingData().shotsTaken + 1 
-       && incomingData().diff(existingData()).affectedKeys().hasOnly(['shotsTaken'])
-     );
-   ```
+**1. Vault Time-Lock (photo reads):**
+```javascript
+// Primary fast path: check the status field written by the Cloud Function
+// Fallback: raw timestamp comparison (source of truth)
+allow read: if galleryStatus() == 'revealed'
+             || isRevealed()   // revealAt <= request.time
+             || (isVerified() && getGallery(galleryId).creatorId == request.auth.uid);
+```
 
-4. **Dynamic Capacity Constraints**:
-   A photo can only be uploaded if the database verifies the contributor has remaining shots left:
-   ```javascript
-   && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots
-   ```
+The creator can always read their own photos (for live stats). Guests cannot until reveal.
+
+**2. Active Shooting Window (photo creates):**
+```javascript
+allow create: if (galleryStatus() == 'active' || (hasStarted() && !isRevealed()))
+  && incomingData().storagePath is string
+  && get(.../contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;
+```
+
+**3. Incremental Shot Integrity:**
+```javascript
+allow update: if incomingData().shotsTaken == existingData().shotsTaken + 1
+               && incomingData().diff(existingData()).affectedKeys().hasOnly(['shotsTaken']);
+```
+
+Guests may only increment their shot counter by exactly one, and cannot change any other field.
+
+**4. Gallery Status is Cloud-Function-Only:**
+```javascript
+allow update: if isVerified() && existingData().creatorId == request.auth.uid
+  && isValidGalleryData(incomingData())
+  && incomingData().status == existingData().status   // clients cannot change status
+  && incomingData().creatorId == existingData().creatorId;
+```
+
+**5. Custom Room Requests:**
+- Any verified user can create a request for themselves.
+- Creators can read only their own requests. Admin can read all.
+- Only admin can update (approve/reject). Delete is forbidden.
+
+### 3.2 Supabase Storage Rules (`storage.rules`)
+
+Uploads use the public anon key (client-side). Bulk deletions on gallery deletion use the service role key server-side inside Cloud Functions.
 
 ---
 
-## 4. Storage Architecture
+## 4. Cloud Functions Backend (`functions/src/`)
 
-Photos are saved in **Supabase Object Storage** instead of Firebase Storage to leverage custom asset buckets. The storage interaction is encapsulated in [src/lib/supabase.ts](file:///c:/Users/randi/Personal/Projects/Later/src/lib/supabase.ts).
+Firebase Cloud Functions v2 handle all privileged, time-sensitive, or destructive operations. All functions are TypeScript using the Firebase Admin SDK.
 
-### 4.1 Asset Upload Flow
-1. The frontend custom camera takes a picture and renders it as an HTML5 Canvas context.
-2. The canvas is serialized into a high-quality compressed JPEG blob (`quality: 0.8`).
-3. The client uploads the binary object directly using Supabase's standard upload path.
-4. The client retrieves the public asset URL and registers it in Firestore.
-
+```mermaid
+graph LR
+    Scheduler["Cloud Scheduler"] -->|every 1 min| advanceGalleryStatus
+    Scheduler -->|3 AM every Sunday| reconcileOrphanedAssets
+    Client -->|httpsCallable| deleteEvent
+    Client -->|httpsCallable| deleteGallery
+    advanceGalleryStatus --> Firestore
+    deleteEvent --> Firestore
+    deleteEvent --> Supabase
+    deleteGallery --> Firestore
+    deleteGallery --> Supabase
+    reconcileOrphanedAssets --> Supabase
+    deleteEvent -.->|on failure| cleanup_queue[(cleanup_queue)]
+    deleteGallery -.->|on failure| cleanup_queue
+    reconcileOrphanedAssets -->|retries| cleanup_queue
 ```
-Canvas Context ──> JPEG Blob (quality: 0.8) ──> Supabase Storage ──> Public URL ──> Firestore Photo Document
+
+### 4.1 `advanceGalleryStatus` — Scheduled every 1 minute
+
+Queries all galleries where `status != 'revealed'` and transitions them:
+- `upcoming` → `active` when `startsAt <= now`
+- any non-revealed status → `revealed` when `revealAt <= now`
+
+Uses Firestore batched writes (max 500 per batch). This is the **only writer of the `status` field**; clients are forbidden from modifying it via security rules.
+
+### 4.2 `deleteEvent` — HTTPS Callable (pre-reveal)
+
+Called when a creator deletes an event **before** it has been revealed. Steps:
+1. Auth check: caller must be the gallery's `creatorId`.
+2. Precondition: gallery must NOT yet be revealed (rejected with `failed-precondition` if so).
+3. Recursively list and delete all files in `galleryId/` in Supabase Storage (batches of 100).
+4. Delete `photos` and `contributors` Firestore subcollections (batched, max 500).
+5. Delete the gallery document.
+6. Any failed storage paths are written to `cleanup_queue`.
+
+### 4.3 `deleteGallery` — HTTPS Callable (post-reveal)
+
+Called when a creator deletes a gallery **after** reveal. Same cleanup sequence as `deleteEvent` but enforces the inverse precondition: gallery MUST be revealed.
+
+**Client routing logic** (`EventManagement.tsx`):
+```typescript
+const fnName = hasRevealed ? 'deleteGallery' : 'deleteEvent';
+const deleteFn = httpsCallable(functions, fnName);
 ```
 
-### 4.2 File Conventions
-Storage files are written inside the `gallery-photos` bucket using a structured folder hierarchy:
-```
-{galleryId}/{contributorId}/{timestamp}.jpg
-```
-This isolates assets by event and user session, preventing overrides.
+### 4.4 `reconcileOrphanedAssets` — Scheduled 3 AM every Sunday
 
-### 4.3 Asset Deletion
-If a creator decides to delete a gallery (in [src/pages/EventManagement.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/EventManagement.tsx#L73-L106)), the client triggers a batch storage cleanup:
-1. Fetch all photo records for the target gallery from Firestore.
-2. For each photo, parse the public URL to extract the relative storage path inside the bucket.
-3. Call `supabase.storage.from('gallery-photos').remove([path])` via [deletePhoto](file:///c:/Users/randi/Personal/Projects/Later/src/lib/supabase.ts#L92-L117).
-4. Delete corresponding Firestore documents (`photos`, `contributors`, and `gallery`).
+Processes the `cleanup_queue` collection. For each item:
+- Retries Supabase Storage `remove()`.
+- On success: deletes the queue document.
+- On failure: increments `attempts`. After 3 failures: sets `flaggedForReview: true`.
 
 ---
 
-## 5. Front-End Architecture & View Flows
+## 5. Front-End Architecture
 
-The front-end app behaves like a progressive mobile web app. Responsive styles target viewport containers bounded to `max-w-md` (centered on desktop displays) to match a physical smartphone aspect ratio.
+### 5.1 Application Shell (`src/App.tsx`)
 
-### 5.1 Routing Configuration
-Defined in [src/App.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/App.tsx), utilizing `AnimatePresence` from Framer Motion for smooth slide-transitions:
+Firebase Auth state is held at the root and passed to `AnimatedRoutes`. Route transitions use `AnimatePresence mode="wait"`. The root div applies the global dark theme, grainy film texture, and atmospheric background gradient.
 
-- **Creator Pages**:
-  - `/` ([Home.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/Home.tsx)): Splash screen displaying authentication entry.
-  - `/dashboard` ([Dashboard.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/Dashboard.tsx)): Creator dashboard. Displays ongoing events vs. past events ("The Vault") and a "New Event" creation trigger.
-  - `/create` ([CreateEvent.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/CreateEvent.tsx)): Setup page to name the event, schedule start/reveal times, and configure shot limits and guest capacity.
-  - `/event/:id` ([EventManagement.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/EventManagement.tsx)): Live coordinator panel. Houses the invite QR code generator, live participant statistics, and a guest registry listing.
-- **Contributor Pages**:
-  - `/join/:id` ([Join.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/Join.tsx)): Welcome screen prompting guests for a nickname. Enforces event-start checks and capacity blocks. Saves references into local storage (`contributor_{id}` and `session_{id}`).
-  - `/capture/:id` ([Capture.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/Capture.tsx)): Full-screen native web camera experience.
-  - `/gallery/:id` ([GalleryView.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/GalleryView.tsx)): Masonry-inspired grid showcasing unlocked photos after the reveal time is met.
+### 5.2 Routing
+
+**Creator routes** (require Firebase auth):
+
+| Path | Component | Purpose |
+|---|---|---|
+| `/` | `Home.tsx` | Splash screen & Google Sign-In |
+| `/dashboard` | `Dashboard.tsx` | Creator dashboard — active events and vault |
+| `/create` | `CreateEvent.tsx` | New event wizard |
+| `/event/:id` | `EventManagement.tsx` | Live coordinator panel |
+| `/request-custom` | `RequestCustomRoom.tsx` | Custom room request form |
+| `/admin` | `AdminPanel.tsx` | Admin-only request review panel |
+
+**Contributor routes** (no auth required):
+
+| Path | Component | Purpose |
+|---|---|---|
+| `/join/:id` | `Join.tsx` | Nickname entry, capacity check, tutorial popup |
+| `/capture/:id` | `Capture.tsx` | Full-screen camera experience |
+| `/gallery/:id` | `GalleryView.tsx` | Post-reveal photo gallery |
+
+### 5.3 Custom Room Request & Admin Workflow
+
+Later operates a two-tier model:
+- **Free plan**: Up to 10 contributors, up to 12 shots per guest. Self-serve via `/create`.
+- **Custom / Paid**: Higher limits. Creators submit a request via `RequestCustomRoom.tsx`, which writes to the `customRequests` Firestore collection.
+
+The admin reviews requests at `AdminPanel.tsx` (`/admin`), gated by `VITE_ADMIN_UID` env var + the hardcoded admin UID in `firestore.rules`. On approval, the admin directly creates a gallery document under the requester's `creatorId`, which then appears automatically in their dashboard.
 
 ---
 
 ## 6. Key Front-End Technical Implementations
 
-### 6.1 Custom In-Browser Camera & Media Capture
-The custom camera in [src/pages/Capture.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/Capture.tsx) leverages browser API constraints:
-- **Active Streaming**: Integrates `navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false })` outputted into an HTML5 `<video autoplay playsinline>` element.
-- **Orientation Correction**: Mobile web uploads often experience rotation offsets because device sensors write orientation metadata that standard browsers don't apply automatically during raw canvas copies. `takePhoto` calculates the screen orientation angle:
-  ```typescript
-  const orientAngle = window.screen?.orientation?.angle ?? 0;
-  const isDeviceLandscape = orientAngle === 90 || orientAngle === 270;
-  const isVideoPortrait = height > width;
-  ```
-  If these variables indicate an orientation mismatch, the canvas matrix is rotated by 90 degrees (`ctx.rotate`) and translated before drawing to match human expectations.
-- **Flash/Torch Support**: Interrogates the camera track capabilities using `track.getCapabilities()`. If `caps.torch` is validated, clicking the toggle fires `track.applyConstraints({ advanced: [{ torch: true }] })` to pulse the device flashlight synchronously during shutter triggers.
+### 6.1 Image URL Centralisation (`src/lib/imageUrl.ts`)
 
-### 6.2 60 FPS Swipable Lightbox Carousel
-A performance bottleneck in mobile browser image viewers is gesture-swiping. Animating with standard React state updates triggers rapid DOM re-renders, causing lag. 
+Photos store a relative `storagePath` in Firestore. Public URLs are constructed on demand:
 
-[src/pages/GalleryView.tsx](file:///c:/Users/randi/Personal/Projects/Later/src/pages/GalleryView.tsx#L23) solves this via a **ref-driven CSS translate mechanism** under the `LightboxCarousel` component:
-1. **Three-Slide Strip Pattern**: Instead of rendering all gallery photos, the DOM only renders 3 active items at any point: `[prev, current, next]`. These are arranged in a horizontal row, translated left by `-100vw` so the `current` slide sits center stage.
-2. **Ref-Based Pointer Capture**: The `onPointerMove` event measures delta movement from starting coordinates (`startX`, `startY`). Instead of setting React state, it modifies the element's style attribute directly:
-   ```typescript
-   stripRef.current.style.transform = `translateX(${getBaseOffset() + deltaX}px)`;
-   ```
-   This bypasses React's diffing engine, delivering 60 FPS transitions driven by hardware-accelerated GPU transforms.
-3. **Threshold Commitment**: On pointer release, if the drag distance exceeds `60px` or a flick velocity exceeds `0.3 px/ms`, the strip applies a smooth transition (`transform 0.3s cubic-bezier(...)`), completes the translation, and schedules a single React state change to slide the next index into focus, resetting the strip layout.
+```typescript
+// Returns: {SUPABASE_URL}/storage/v1/object/public/gallery-photos/{storagePath}
+export function getThumbnailUrl(storagePath: string): string
+export function getFullSizeUrl(storagePath: string): string
+export function getRawUrl(storagePath: string): string
+```
+
+All three currently return the same raw public URL (Supabase Image Transformations are a paid feature), but the abstraction allows transparent future upgrades.
+
+### 6.2 Custom Camera & Dual Orientation Model (`src/pages/Capture.tsx`)
+
+The camera maintains **two independent orientation angles**:
+
+| State | Source | Purpose |
+|---|---|---|
+| `viewportOrientationAngle` | `window.screen.orientation.angle` | CSS counter-rotation of the viewfinder container |
+| `deviceOrientationAngle` | `DeviceOrientationEvent` via `Math.atan2(-gamma, beta)` | Canvas rotation at capture; UI icon counter-rotation |
+
+This separation is critical: using only the viewport angle would break the camera when rotation lock is enabled. The accelerometer model is device-physical and rotation-lock-independent.
+
+**Accelerometer-based orientation detection:**
+```typescript
+const handleDeviceOrientation = (event: DeviceOrientationEvent) => {
+  const magnitude = Math.sqrt(beta * beta + gamma * gamma);
+  if (magnitude >= 25) {   // ignore flat/ambiguous orientations
+    let angle = Math.round(Math.atan2(-gamma, beta) * (180 / Math.PI));
+    // snap to 0, 90, 180, 270 and remap to physicalOrientation
+  }
+};
+```
+
+**Image capture normalisation:**
+Before drawing to canvas, if the device is physically landscape but the video stream is portrait (common on mobile), the canvas is rotated 90° in the correct direction — clockwise for landscape-right (90°), counter-clockwise for landscape-left (270°). Saved pixel data is always correctly oriented; no EXIF metadata is relied upon.
+
+```typescript
+const shouldRotate = isDeviceLandscape && isVideoPortrait;
+if (shouldRotate) {
+  const rotDir = normAngle === 90 ? 1 : -1;
+  ctx.translate(effectiveW / 2, effectiveH / 2);
+  ctx.rotate((rotDir * Math.PI) / 2);
+  ctx.drawImage(video, ...);
+}
+```
+
+**Feature detection:**
+- **Torch**: `track.getCapabilities().torch` → `applyConstraints({ torch: true })` for 650ms.
+- **Native Zoom**: `track.getCapabilities().zoom` → native constraints if available, CSS `scale()` fallback.
+- **Tap-to-Focus**: `focusMode: 'single-shot'` with `pointsOfInterest` + animated focus ring.
+
+### 6.3 Push Notifications & Service Worker (`src/lib/notifications.ts`)
+
+Later uses a Service Worker (`/sw.js`) for scheduling local push notifications — no server-side push infrastructure required.
+
+```
+Capture.tsx → notifications.ts → postMessage → sw.js → Notification API
+```
+
+**Notification types:**
+- **Inactivity reminder**: fires after a configurable interval if the user has unused shots and the app is backgrounded.
+- **Before-end reminder**: fires N minutes before the reveal time.
+- **Reveal notification**: fires when `revealAt` is reached.
+
+**Key platform behaviour:**
+- On iOS, notifications only work when the app is installed as a PWA. `canNotify()` gates on `isPWA()` for iOS users. `NotificationPrompt.tsx` surfaces Add-to-Home-Screen instructions in this case instead of a permission request.
+- SW message protocol: `SCHEDULE_REMINDERS`, `PAGE_VISIBLE`, `PHOTO_TAKEN`, `CANCEL_REMINDERS`.
+
+### 6.4 60 FPS Swipeable Lightbox Carousel (`src/pages/GalleryView.tsx`)
+
+React state updates on every `pointermove` cause visible lag on mobile. The `LightboxCarousel` component bypasses React's reconciler for drag gestures:
+
+1. **Three-slide DOM strip**: Only `[prev, current, next]` images are rendered, laid in a horizontal row translated left by `-100vw` so `current` is centred.
+2. **Ref-based drag**: `onPointerMove` writes directly to `stripRef.current.style.transform` — no `setState`, no re-render.
+3. **Snap-on-release**: If drag distance > 60px or velocity > 0.3 px/ms, a CSS transition completes the slide, then a single `setState` updates the current index and resets the strip with new neighbours.
 
 ---
 
-## 7. UI/UX Design System & Aesthetics
+## 7. Library Modules (`src/lib/`)
 
-The design of **Later** is optimized for high-visual-impact dark aesthetics, capturing the analog, raw, grainy feel of retro film inside a premium digital frame.
-
-### 7.1 Design Tokens (`src/index.css`)
-Custom variables defined inside [src/index.css](file:///c:/Users/randi/Personal/Projects/Later/src/index.css) drive the styling consistency:
-- **`--color-bg`**: `#080808` — Deep obsidian charcoal.
-- **`--color-card`**: `#121212` — Dark elevated cards.
-- **`--color-accent`**: `#E5C3A6` — A warm, champagne-gold pastel hue serving as the highlight color.
-- **`--color-text-muted`**: `#888888` — Neutral gray for headers and status tags.
-- **Fonts**:
-  - `font-sans`: `Inter` (neutral readability for settings and options).
-  - `font-serif`: `Playfair Display` (italicized headings to convey elegance).
-  - `font-mono`: `JetBrains Mono` (digitized, raw display stats and countdown times).
-
-### 7.2 Atmospheric Layering
-To prevent the dark mode from feeling flat, two distinct CSS elements are used:
-- **`.atmosphere`**: A fixed, non-interactive back layer applying multi-point radial gradients (`#1a1512` at top-right, `#0d0d0d` at bottom-left) to simulate warm lens leakage.
-- **`.grainy` Noise Texture**: An overlay layer using a blended film grain SVG with low opacity (`0.03`) and an `overlay` mix-blend mode. This replicates the visual texture of physical film grain across the screens.
+| Module | Purpose |
+|---|---|
+| `firebase.ts` | App init; exports `auth`, `db`, `functions`; `handleFirestoreError` (throws) and `logFirestoreError` (logs only — safe for `onSnapshot` callbacks) |
+| `supabase.ts` | Client init with URL normalisation; `uploadPhoto()` using ArrayBuffer path for correct MIME; `deletePhoto()` non-throwing |
+| `imageUrl.ts` | Centralised public URL construction from relative `storagePath` |
+| `notifications.ts` | SW registration; permission flow; SW message protocol helpers |
+| `utils.ts` | `cn()` — `clsx` + `tailwind-merge` for conditional class composition |
 
 ---
 
-## 8. Deployment & Environment Settings
+## 8. UI Components (`src/components/`)
 
-The project is preconfigured for deployment on **Vercel** via [vercel.json](file:///c:/Users/randi/Personal/Projects/Later/vercel.json), setting Vite redirects to index.html to allow client-side route handling.
+| Component | Purpose |
+|---|---|
+| `PageWrapper.tsx` | Responsive container — centers to `max-w-md`, fade-in motion |
+| `Badge.tsx` | Pill-shaped status label |
+| `Button.tsx` | Styled button with `default` and `accent` variants |
+| `LoadingScreen.tsx` | Full-screen pulsing logo during Firebase auth state resolution |
+| `TutorialPopup.tsx` | First-join modal explaining shot limits, vault mechanics, camera controls, and reveal time |
+| `NotificationPrompt.tsx` | Slide-up notification permission prompt with iOS PWA detection |
 
-### 8.1 Environment Variables
-Key configuration tokens are specified inside `.env.local` based on [.env.example](file:///c:/Users/randi/Personal/Projects/Later/.env.example):
-- `VITE_SUPABASE_URL`: API gateway endpoint for the Supabase instance.
-- `VITE_SUPABASE_ANON_KEY`: Public client-safe access token for storage uploads.
+---
+
+## 9. UI/UX Design System
+
+### 9.1 Design Tokens (`src/index.css`)
+
+| Token | Value | Usage |
+|---|---|---|
+| `--color-bg` | `#080808` | Page background — deep obsidian |
+| `--color-card` | `#121212` | Elevated card surfaces |
+| `--color-accent` | `#E5C3A6` | Warm champagne gold — primary highlight |
+| `--color-text-muted` | `#888888` | Secondary labels |
+| `font-sans` | Inter | Body text, controls |
+| `font-serif` | Playfair Display | Italic headings, titles |
+| `font-mono` | JetBrains Mono | Stats, countdowns, codes |
+
+### 9.2 Atmospheric Layering
+
+- **`.atmosphere`**: Fixed, non-interactive radial gradient — warm `#1a1512` at top-right, cool `#0d0d0d` at bottom-left — simulates analog lens leakage.
+- **`.grainy`**: Blended SVG film grain overlay at 3% opacity in `overlay` blend mode — replicates physical film grain across all screens.
+
+---
+
+## 10. Deployment & Environment
+
+### 10.1 Hosting
+
+- **Frontend**: Vercel — all unmatched routes rewrite to `index.html` for client-side routing.
+- **Cloud Functions**: `firebase deploy --only functions`
+- **Firestore rules**: `firebase deploy --only firestore:rules`
+- **Favicon**: SVG favicon at `public/favicon.svg`, linked in `index.html` with `type="image/svg+xml"`.
+
+### 10.2 Environment Variables
+
+**Frontend (`.env.local`):**
+
+| Variable | Purpose |
+|---|---|
+| `VITE_SUPABASE_URL` | Supabase project API URL |
+| `VITE_SUPABASE_ANON_KEY` | Public anon key for client-side storage uploads |
+| `VITE_ADMIN_UID` | Firebase UID of the admin user (gates `/admin` route client-side) |
+
+**Cloud Functions (Firebase Secret Manager / env config):**
+
+| Variable | Purpose |
+|---|---|
+| `SUPABASE_URL` | Supabase project URL (server-side) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Service role key for privileged storage deletions |
+
+### 10.3 Firebase Configuration
+
+Firebase app config is in `firebase-applet-config.json` (gitignored), imported directly in `src/lib/firebase.ts`. Includes a `firestoreDatabaseId` field to target a named Firestore database instance.
+
+---
+
+## 11. Storage Architecture
+
+### 11.1 Upload Flow
+
+```
+takePhoto()
+  → canvas.toBlob()  → JPEG at quality 0.92
+  → blob.arrayBuffer()
+  → supabase.storage.from('gallery-photos').upload(storagePath, arrayBuffer, { contentType: 'image/jpeg' })
+  → addDoc(photos, { storagePath, width, height, createdAt })
+  → updateDoc(contributor, { shotsTaken: increment(1) })
+```
+
+Photos upload as `ArrayBuffer` with an explicit `Content-Type: image/jpeg` header (not multipart FormData) to ensure correct MIME handling.
+
+### 11.2 Path Convention
+
+```
+gallery-photos/
+  {galleryId}/
+    {contributorId}/
+      {Date.now()}.jpg
+```
+
+### 11.3 Deletion Lifecycle
+
+```mermaid
+graph LR
+    A["Creator taps Delete"] --> B{"hasRevealed?"}
+    B -->|No| C["deleteEvent CF"]
+    B -->|Yes| D["deleteGallery CF"]
+    C --> E["Storage: list and remove gallery folder"]
+    D --> E
+    E -->|success| F["Firestore: delete photos + contributors + gallery"]
+    E -->|partial failure| G["Write failed paths to cleanup_queue"]
+    G --> H["reconcileOrphanedAssets retries weekly"]
+```
+
+If the Cloud Function call itself fails (e.g. network), `EventManagement.tsx` falls back to client-side deletion using the anon Supabase key and the Firestore client SDK. A final `alert()` surfaces if both paths fail.
