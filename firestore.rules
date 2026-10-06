@@ -40,7 +40,9 @@ service cloud.firestore {
           && data.maxContributors is int && data.maxContributors > 0 && data.maxContributors <= 10000
           && data.creatorId is string
           && data.status is string
-          && data.status in ['upcoming', 'active', 'revealed'];
+          && data.status in ['upcoming', 'active', 'revealed']
+          && (!('releaseMode' in data) || data.releaseMode in ['auto', 'host'])
+          && (!('sharedAt' in data) || data.sharedAt is timestamp);
       }
 
       function galleryStatus() {
@@ -55,13 +57,21 @@ service cloud.firestore {
         && isValidGalleryData(incomingData())
         && (incomingData().creatorId == request.auth.uid || isAdmin())
         && incomingData().status == 'upcoming'
+        && !('sharedAt' in incomingData())
         && incomingData().createdAt == request.time;
 
       // Clients may update gallery fields but cannot change status — only the Cloud Function advances it
       allow update: if isVerified() && existingData().creatorId == request.auth.uid
         && isValidGalleryData(incomingData())
         && incomingData().status == existingData().status
-        && incomingData().creatorId == existingData().creatorId;
+        && incomingData().creatorId == existingData().creatorId
+        // Release mode is fixed once the reveal time has passed
+        && (incomingData().get('releaseMode', 'auto') == existingData().get('releaseMode', 'auto')
+            || existingData().revealAt > request.time)
+        // sharedAt: unchanged, removed, or set to the server time ("Share with guests")
+        && (!('sharedAt' in incomingData())
+            || incomingData().sharedAt == existingData().get('sharedAt', null)
+            || incomingData().sharedAt == request.time);
       allow delete: if isVerified() && existingData().creatorId == request.auth.uid;
 
       // --- Contributors ---
@@ -99,16 +109,29 @@ service cloud.firestore {
         function hasStarted() {
           return getGallery(galleryId).startsAt <= request.time;
         }
+        // Optional size variants (thumb / display) — absent, or a sane path string
+        function isOptionalPath(data, key) {
+          return !(key in data) || (data[key] is string && data[key].size() > 0 && data[key].size() <= 2048);
+        }
+
+        // Host-first galleries stay hidden from guests until the creator shares them
+        function guestsCanView() {
+          let g = getGallery(galleryId);
+          return g.get('releaseMode', 'auto') != 'host' || g.get('sharedAt', null) != null;
+        }
 
         // Primary: status field (fast path, set by Cloud Function)
         // Fallback: timestamp comparison (source of truth)
-        allow read: if galleryStatus() == 'revealed' || isRevealed() || (isVerified() && getGallery(galleryId).creatorId == request.auth.uid);
+        allow read: if ((galleryStatus() == 'revealed' || isRevealed()) && guestsCanView())
+          || (isVerified() && getGallery(galleryId).creatorId == request.auth.uid);
         allow create: if (galleryStatus() == 'active' || (hasStarted() && !isRevealed()))
           && incomingData().galleryId == galleryId
           && incomingData().contributorId is string
           && incomingData().storagePath is string
           && incomingData().storagePath.size() > 0
           && incomingData().storagePath.size() <= 2048
+          && isOptionalPath(incomingData(), 'displayPath')
+          && isOptionalPath(incomingData(), 'thumbPath')
           && incomingData().createdAt == request.time
           // Validate contributor exists and has shots left
           && get(/databases/$(database)/documents/galleries/$(galleryId)/contributors/$(incomingData().contributorId)).data.shotsTaken < getGallery(galleryId).maxShots;

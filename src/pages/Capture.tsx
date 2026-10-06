@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp } from "firebase/firestore";
 import { db, logFirestoreError, OperationType } from "../lib/firebase";
-import { uploadPhoto } from "../lib/supabase";
-import { Gallery, Contributor } from "../types";
+import { newPhotoPath, uploadJpeg } from "../lib/supabase";
+import { createVariants, fitWithinPixels, ORIGINAL_QUALITY, variantPath, VariantName } from "../lib/imageProcessing";
+import { cameraConstraints, takeStillPhoto } from "../lib/camera";
+import { Gallery, Contributor, GalleryNotificationSettings } from "../types";
+import { isHostFirst } from "../lib/gallery";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
@@ -24,6 +27,21 @@ import {
   isIOS,
   isPWA,
 } from "../lib/notifications";
+
+/** Defaults the service worker assumes when a gallery has no notification settings. */
+const DEFAULT_NOTIFICATION_SETTINGS: GalleryNotificationSettings = {
+  enabled: true,
+  inactivityInterval: 10,
+  recurrentInactivity: false,
+  beforeEndReminder: 5,
+  notifyOnReveal: true,
+};
+
+/** Private-reveal galleries aren't viewable at reveal time, so skip the "vault is open" notification. */
+function reminderSettings(gallery: Gallery): GalleryNotificationSettings | undefined {
+  if (!isHostFirst(gallery)) return gallery.notificationSettings;
+  return { ...DEFAULT_NOTIFICATION_SETTINGS, ...gallery.notificationSettings, notifyOnReveal: false };
+}
 
 export default function Capture() {
   const { id } = useParams<{ id: string }>();
@@ -168,6 +186,16 @@ export default function Capture() {
   const streamRef = useRef<MediaStream | null>(null);
   const mountedRef = useRef(true);
 
+  // The <video> only renders once Firestore data has loaded, which can be after
+  // getUserMedia resolves. Attach the stream whenever the element (re)mounts.
+  const attachVideoRef = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el && streamRef.current && el.srcObject !== streamRef.current) {
+      el.srcObject = streamRef.current;
+      el.play().catch(e => console.error("Video play failed:", e));
+    }
+  }, []);
+
   useEffect(() => {
     if (!id) return;
     mountedRef.current = true;
@@ -268,7 +296,7 @@ export default function Capture() {
             `${baseUrl}/capture/${id}`,
             `${baseUrl}/gallery/${id}`,
             reminderCount.current,
-            gallery.notificationSettings,
+            reminderSettings(gallery),
           );
           notifScheduled.current = true;
         }
@@ -296,7 +324,7 @@ export default function Capture() {
             `${baseUrl}/capture/${id}`,
             `${baseUrl}/gallery/${id}`,
             reminderCount.current,
-            gallery.notificationSettings,
+            reminderSettings(gallery),
           );
         }
       } else {
@@ -327,7 +355,7 @@ export default function Capture() {
           `${baseUrl}/capture/${id}`,
           `${baseUrl}/gallery/${id}`,
           reminderCount.current,
-          gallery.notificationSettings,
+          reminderSettings(gallery),
         );
         notifScheduled.current = true;
       }
@@ -360,7 +388,7 @@ export default function Capture() {
 
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing },
+        video: cameraConstraints(facing),
         audio: false
       });
       // Component may have unmounted while getUserMedia was pending.
@@ -527,59 +555,68 @@ export default function Capture() {
     setFlashEffect(true);
     setTimeout(() => setFlashEffect(false), 150);
 
-    const MAX_DIM = 4096;
+    // Prefer the phone's still-photo pipeline (better processing than a video frame).
+    // With flash on, stay on the proven torch + video-frame path.
+    const track = streamRef.current?.getVideoTracks()[0];
+    let still = !shouldFlash && track ? await takeStillPhoto(track) : null;
+    const videoPortrait = video.videoHeight > video.videoWidth;
+    if (still && (still.height > still.width) !== videoPortrait) {
+      // Orientation differs from the preview; the rotation logic below assumes they match.
+      console.warn("Still photo orientation differs from preview; using video frame");
+      still.release();
+      still = null;
+    }
+    // Some devices end or pause the preview stream after a still capture.
+    if (track && track.readyState === "ended") startCamera(facingMode);
+    else if (video.paused) video.play().catch(() => {});
 
-    let width = video.videoWidth || 640;
-    let height = video.videoHeight || 480;
+    const source: CanvasImageSource = still ? still.source : video;
+    const width = still ? still.width : video.videoWidth || 640;
+    const height = still ? still.height : video.videoHeight || 480;
 
-    // Detect device orientation — if device is landscape but video is portrait, rotate
+    // Digital zoom (when the camera has no native zoom) crops the centre of the frame.
+    const zoomRatio = hasNativeZoom ? 1 : zoom;
+    const sourceW = width / zoomRatio;
+    const sourceH = height / zoomRatio;
+    const sourceX = (width - sourceW) / 2;
+    const sourceY = (height - sourceH) / 2;
+
+    // Detect device orientation — if device is landscape but the frame is portrait, rotate
     const normAngle = deviceOrientationAngle;
     const isDeviceLandscape = normAngle === 90 || normAngle === 270;
     const isVideoPortrait = height > width;
     const shouldRotate = isDeviceLandscape && isVideoPortrait;
 
+    // Output size: the cropped area (never upscaled), rotated if needed, capped at 12 MP.
+    const croppedW = Math.round(shouldRotate ? sourceH : sourceW);
+    const croppedH = Math.round(shouldRotate ? sourceW : sourceH);
+    const { width: effectiveW, height: effectiveH } = fitWithinPixels(croppedW, croppedH);
+
     console.log("Photo capture diagnostics:", {
-      videoWidth: width,
-      videoHeight: height,
+      source: still ? "still" : "video",
+      frameWidth: width,
+      frameHeight: height,
       deviceOrientationAngle: normAngle,
       isDeviceLandscape,
       isVideoPortrait,
       shouldRotate,
-      canvasWidth: shouldRotate ? height : width,
-      canvasHeight: shouldRotate ? width : height,
+      canvasWidth: effectiveW,
+      canvasHeight: effectiveH,
       zoom,
       hasNativeZoom
     });
-
-    // For rotation, swap the effective dimensions
-    let effectiveW = shouldRotate ? height : width;
-    let effectiveH = shouldRotate ? width : height;
-
-    if (effectiveW > MAX_DIM || effectiveH > MAX_DIM) {
-      if (effectiveW > effectiveH) {
-        effectiveH = Math.round((effectiveH * MAX_DIM) / effectiveW);
-        effectiveW = MAX_DIM;
-      } else {
-        effectiveW = Math.round((effectiveW * MAX_DIM) / effectiveH);
-        effectiveH = MAX_DIM;
-      }
-    }
 
     canvas.width = effectiveW;
     canvas.height = effectiveH;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) {
+      still?.release();
       setCapturing(false);
       return;
     }
-
-    // Apply digital zoom if native zoom is not available
-    const zoomRatio = hasNativeZoom ? 1 : zoom;
-    const sourceW = width / zoomRatio;
-    const sourceH = height / zoomRatio;
-    const sourceX = (width - sourceW) / 2;
-    const sourceY = (height - sourceH) / 2;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     if (shouldRotate) {
       // Rotate canvas to produce a landscape image
@@ -588,30 +625,35 @@ export default function Capture() {
       const rotDir = normAngle === 90 ? 1 : -1;
       ctx.translate(effectiveW / 2, effectiveH / 2);
       ctx.rotate((rotDir * Math.PI) / 2);
-      ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
+      ctx.drawImage(source, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
     } else {
-      ctx.drawImage(video, sourceX, sourceY, sourceW, sourceH, 0, 0, effectiveW, effectiveH);
+      ctx.drawImage(source, sourceX, sourceY, sourceW, sourceH, 0, 0, effectiveW, effectiveH);
     }
+    still?.release();
 
     // Turn off flash after capture
     if (shouldFlash) {
       endFlash();
     }
 
-    // Generate a preview data URL for the instant polaroid effect
-    const previewUrl = canvas.toDataURL("image/jpeg", 0.4);
+    // Encode the smaller sizes first: the display copy doubles as the instant polaroid preview.
+    const variants = await createVariants(canvas);
+    const previewUrl = variants.display ? URL.createObjectURL(variants.display) : canvas.toDataURL("image/jpeg", 0.4);
     setPreviewLandscape(effectiveW > effectiveH);
     setPreview(previewUrl);
 
     // Convert canvas to a JPEG blob for Supabase upload
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", 0.92)
+      canvas.toBlob(resolve, "image/jpeg", ORIGINAL_QUALITY)
     );
+    const photoWidth = canvas.width;
+    const photoHeight = canvas.height;
 
     if (!blob) {
       setError("Failed to capture image. Please try again.");
       setCapturing(false);
       setPreview(null);
+      if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
       return;
     }
 
@@ -620,23 +662,42 @@ export default function Capture() {
       if (!mountedRef.current) return;
       try {
         setPreview(null);
+        if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
 
         if (!id || !contributor?.id) {
           setError("Session expired. Please rejoin the gallery.");
           return;
         }
 
-        // Upload to Supabase Storage and get the relative storage path
-        const storagePath = await uploadPhoto(blob, id, contributor.id);
+        // Original first — it's the one that matters. The smaller sizes are
+        // best-effort: if one fails, the gallery falls back to the original.
+        const storagePath = newPhotoPath(id, contributor.id);
+        await uploadJpeg(blob, storagePath);
 
-        // Save the storage path to Firestore
+        const sizePaths: Partial<Record<"displayPath" | "thumbPath", string>> = {};
+        await Promise.all(
+          (Object.keys(variants) as VariantName[]).map(async (name) => {
+            const variantBlob = variants[name];
+            if (!variantBlob) return;
+            const path = variantPath(storagePath, name);
+            try {
+              await uploadJpeg(variantBlob, path);
+              sizePaths[name === "display" ? "displayPath" : "thumbPath"] = path;
+            } catch (err) {
+              console.warn(`Optional ${name} upload failed; gallery will use the original`, err);
+            }
+          })
+        );
+
+        // Save the storage paths to Firestore
         try {
           await addDoc(collection(db, "galleries", id, "photos"), {
             galleryId: id,
             contributorId: contributor.id,
             storagePath,
-            width: canvas.width,
-            height: canvas.height,
+            ...sizePaths,
+            width: photoWidth,
+            height: photoHeight,
             createdAt: serverTimestamp()
           });
         } catch (err: any) {
@@ -827,7 +888,7 @@ export default function Capture() {
             </div>
           ) : (
             <video
-              ref={videoRef}
+              ref={attachVideoRef}
               autoPlay
               playsInline
               muted

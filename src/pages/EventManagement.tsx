@@ -2,13 +2,14 @@ import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { db, functions, logFirestoreError, OperationType } from "../lib/firebase";
-import { deletePhoto } from "../lib/supabase";
+import { deletePhotoFiles } from "../lib/supabase";
 import { Gallery, Contributor } from "../types";
 import { cn } from "../lib/utils";
 import PageWrapper from "../components/PageWrapper";
-import { ArrowLeft, Copy, Camera, Trash2, Users } from "lucide-react";
+import { ArrowLeft, Copy, Camera, Trash2, Users, EyeOff, Share2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { httpsCallable } from "firebase/functions";
+import { isHostFirst, setGalleryShared, setReleaseMode } from "../lib/gallery";
 
 export default function EventManagement() {
   const { id } = useParams<{ id: string }>();
@@ -19,6 +20,8 @@ export default function EventManagement() {
   const [copied, setCopied] = useState(false);
   const [confirmDeleteGallery, setConfirmDeleteGallery] = useState(false);
   const [deletingGallery, setDeletingGallery] = useState(false);
+  const [savingRelease, setSavingRelease] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
   // Tick every 30s so time-based conditions (isLive, hasRevealed) stay current
   const [now, setNow] = useState(() => new Date());
 
@@ -111,14 +114,8 @@ export default function EventManagement() {
         const photosSnap = await getDocs(collection(db, "galleries", id, "photos"));
         console.log(`Deleting ${photosSnap.size} photos...`);
         await Promise.all(photosSnap.docs.map(async (photoDoc) => {
-          const storagePath = photoDoc.data().storagePath;
-          if (storagePath) {
-            try {
-              await deletePhoto(storagePath);
-            } catch (storageErr) {
-              console.error("Failed to delete storage path client-side:", storagePath, storageErr);
-            }
-          }
+          const { storagePath, displayPath, thumbPath } = photoDoc.data();
+          await deletePhotoFiles([storagePath, displayPath, thumbPath]);
           await deleteDoc(photoDoc.ref);
         }));
 
@@ -145,6 +142,21 @@ export default function EventManagement() {
 
   const hasRevealed = gallery.status === 'revealed' || gallery.revealAt.toDate() <= now;
   const isLive = gallery.status === 'active' || (gallery.startsAt.toDate() <= now && !hasRevealed);
+  const hostFirst = isHostFirst(gallery);
+
+  const runReleaseUpdate = async (update: () => Promise<void>) => {
+    if (!id || savingRelease) return;
+    setSavingRelease(true);
+    setReleaseError(null);
+    try {
+      await update();
+    } catch (err) {
+      logFirestoreError(err, OperationType.UPDATE, `galleries/${id}`);
+      setReleaseError("Couldn't save that change. Please try again.");
+    } finally {
+      setSavingRelease(false);
+    }
+  };
 
   return (
     <PageWrapper>
@@ -191,6 +203,64 @@ export default function EventManagement() {
             </div>
           </button>
         )}
+
+        {/* Private reveal — editable until the reveal */}
+        {!hasRevealed && (
+          <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-white/[0.02] border border-white/5">
+            <div className="flex items-start gap-3">
+              <EyeOff size={16} className="text-accent mt-0.5 shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-white/90">Private reveal</p>
+                <p className="text-xs text-text-muted mt-1">
+                  Only you see the photos at reveal. Share them with guests when you're ready.
+                </p>
+              </div>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                aria-label="Private reveal"
+                checked={hostFirst}
+                disabled={savingRelease}
+                onChange={(e) => runReleaseUpdate(() => setReleaseMode(id!, e.target.checked ? 'host' : 'auto'))}
+              />
+              <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent peer-disabled:opacity-50"></div>
+            </label>
+          </div>
+        )}
+
+        {/* Share with guests — host-first galleries after the reveal */}
+        {hasRevealed && hostFirst && (
+          <div className="p-5 rounded-[2rem] bg-card border border-accent/20 space-y-4">
+            <div className="flex items-start gap-3">
+              {gallery.sharedAt ? <Share2 size={18} className="text-accent mt-0.5 shrink-0" /> : <EyeOff size={18} className="text-accent mt-0.5 shrink-0" />}
+              <div>
+                <p className="text-base font-serif italic text-white/90">
+                  {gallery.sharedAt ? "Shared with guests" : "Only you can see these photos"}
+                </p>
+                <p className="text-xs text-text-muted mt-1">
+                  {gallery.sharedAt
+                    ? "Guests can open the gallery now."
+                    : "Remove anything you don't want, then share the gallery with your guests."}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => runReleaseUpdate(() => setGalleryShared(id!, !gallery.sharedAt))}
+              disabled={savingRelease}
+              className={cn(
+                "w-full py-3 rounded-full font-bold text-xs uppercase tracking-[0.15em] flex items-center justify-center gap-2 active:scale-[0.98] transition-all disabled:opacity-50",
+                gallery.sharedAt ? "bg-white/10 text-white/80" : "bg-accent text-zinc-950"
+              )}
+            >
+              {gallery.sharedAt ? <EyeOff size={14} /> : <Share2 size={14} />}
+              <span>{savingRelease ? "Saving..." : gallery.sharedAt ? "Make private again" : "Share with guests"}</span>
+            </button>
+          </div>
+        )}
+
+        {releaseError && <p className="text-red-300 text-xs text-center">{releaseError}</p>}
 
         {/* Info List */}
         <div className="space-y-6 pt-4">

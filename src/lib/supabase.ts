@@ -25,7 +25,7 @@ if (!isSupabaseConfigured) {
 
 // createClient throws synchronously on an empty URL, which would crash the
 // entire app at load. Fall back to a valid placeholder so the app still
-// renders; uploadPhoto guards against an unconfigured client below.
+// renders; uploadJpeg guards against an unconfigured client below.
 export const supabase = createClient(
   supabaseUrl || "https://placeholder.supabase.co",
   supabaseAnonKey || "placeholder-anon-key"
@@ -34,21 +34,19 @@ export const supabase = createClient(
 /** The Supabase Storage bucket name used for gallery photos. */
 export const PHOTOS_BUCKET = "gallery-photos";
 
-/**
- * Upload a JPEG blob to Supabase Storage and return the relative storage path.
- *
- * Files are stored as: `{galleryId}/{contributorId}/{timestamp}.jpg`
- */
-export async function uploadPhoto(
-  blob: Blob,
-  galleryId: string,
-  contributorId: string
-): Promise<string> {
+/** Long cache: a photo's bytes never change once uploaded. */
+const PHOTO_CACHE_SECONDS = "31536000";
+
+/** Relative storage path for a new original: `{galleryId}/{contributorId}/{timestamp}.jpg` */
+export function newPhotoPath(galleryId: string, contributorId: string): string {
+  return `${galleryId}/${contributorId}/${Date.now()}.jpg`;
+}
+
+/** Upload a JPEG blob to `storagePath` in the photos bucket. Throws on failure. */
+export async function uploadJpeg(blob: Blob, storagePath: string): Promise<void> {
   if (!isSupabaseConfigured) {
     throw new Error("Photo storage is not configured. Please contact the event creator.");
   }
-
-  const storagePath = `${galleryId}/${contributorId}/${Date.now()}.jpg`;
 
   // Convert Blob → ArrayBuffer so the SDK uses the raw-binary upload path
   // (Content-Type: image/jpeg header) instead of multipart FormData.
@@ -58,7 +56,7 @@ export async function uploadPhoto(
     .from(PHOTOS_BUCKET)
     .upload(storagePath, arrayBuffer, {
       contentType: "image/jpeg",
-      cacheControl: "3600",
+      cacheControl: PHOTO_CACHE_SECONDS,
       upsert: false,
     });
 
@@ -72,17 +70,18 @@ export async function uploadPhoto(
       `Upload failed [${status ?? "?"}]: ${error.message} — project URL: "${supabaseUrl}"`
     );
   }
-
-  return storagePath;
 }
 
 /**
- * Delete a photo from Supabase Storage by its relative storage path.
+ * Delete photo files (original + any size variants) from Supabase Storage.
  *
  * Logs errors but does not throw — Firestore is the source of truth and
  * orphaned storage files are acceptable.
  */
-export async function deletePhoto(storagePath: string): Promise<void> {
+export async function deletePhotoFiles(paths: Array<string | undefined>): Promise<void> {
+  const toDelete = paths.filter((p): p is string => Boolean(p));
+  if (toDelete.length === 0) return;
+
   if (!isSupabaseConfigured) {
     console.warn("Supabase not configured — skipping storage deletion.");
     return;
@@ -91,7 +90,7 @@ export async function deletePhoto(storagePath: string): Promise<void> {
   try {
     const { error } = await supabase.storage
       .from(PHOTOS_BUCKET)
-      .remove([storagePath]);
+      .remove(toDelete);
 
     if (error) {
       console.error("Supabase delete failed:", error);

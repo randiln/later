@@ -3,7 +3,7 @@ import { addDoc, collection, serverTimestamp, Timestamp } from "firebase/firesto
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
 import PageWrapper from "../components/PageWrapper";
 import Button from "../components/Button";
-import { ArrowLeft, Sparkles, Crown, ChevronRight, Settings2, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, Sparkles, Crown, ChevronRight, Settings2, ChevronDown, ChevronUp, EyeOff } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -19,6 +19,7 @@ export default function CreateEvent() {
   const [revealAt, setRevealAt] = useState("");
   const [maxShots, setMaxShots] = useState(12);
   const [maxContributors, setMaxContributors] = useState(10);
+  const [privateReveal, setPrivateReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -60,6 +61,7 @@ export default function CreateEvent() {
         maxShots: Number(maxShots),
         maxContributors: Number(maxContributors),
         status: 'upcoming',
+        releaseMode: privateReveal ? 'host' : 'auto',
         notificationSettings: {
           enabled: notifEnabled,
           inactivityInterval: notifInactivity,
@@ -177,6 +179,29 @@ export default function CreateEvent() {
             </motion.button>
           )}
         </AnimatePresence>
+
+        {/* Private reveal (host-first) */}
+        <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-white/[0.02] border border-white/5">
+          <div className="flex items-start gap-3">
+            <EyeOff size={16} className="text-accent mt-0.5 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-white/90">Private reveal</p>
+              <p className="text-xs text-text-muted mt-1">
+                Only you see the photos at reveal. Share them with guests when you're ready.
+              </p>
+            </div>
+          </div>
+          <label className="relative inline-flex items-center cursor-pointer shrink-0">
+            <input
+              type="checkbox"
+              className="sr-only peer"
+              aria-label="Private reveal"
+              checked={privateReveal}
+              onChange={(e) => setPrivateReveal(e.target.checked)}
+            />
+            <div className="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent"></div>
+          </label>
+        </div>
 
         {/* Advanced Settings */}
         <div className="pt-4">

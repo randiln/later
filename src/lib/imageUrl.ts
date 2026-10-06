@@ -1,10 +1,11 @@
 /**
- * Centralised image URL construction for Supabase Storage transformed images.
+ * Centralised image URL construction for Supabase Storage.
  *
- * All photo documents store a relative `storagePath` (e.g. "galleryId/contributorId/timestamp.jpg").
- * This module constructs the appropriate Supabase URL with transformation parameters
- * for each rendering context.
+ * Each photo is stored in up to three sizes (see `imageProcessing.ts`). Photos taken
+ * before sizes existed only have `storagePath`, so every helper falls back to it.
  */
+
+import { Photo } from "../types";
 
 const supabaseUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || "")
   .trim()
@@ -13,28 +14,23 @@ const supabaseUrl = ((import.meta.env.VITE_SUPABASE_URL as string) || "")
 
 const BUCKET = "gallery-photos";
 
-/**
- * Thumbnail URL for the masonry gallery grid.
- * Optimised for fast loading: small dimensions, moderate quality, WebP format.
- */
-export function getThumbnailUrl(storagePath: string): string {
-  // Use raw public URL. Supabase Image Transformation (/render/image) is a paid-tier feature.
-  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
+type PhotoPaths = Pick<Photo, "storagePath" | "displayPath" | "thumbPath">;
+
+function publicUrl(path: string): string {
+  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${path}`;
 }
 
-/**
- * Full-size URL for the lightbox carousel.
- * High quality for detail viewing, but still compressed vs raw.
- */
-export function getFullSizeUrl(storagePath: string): string {
-  // Use raw public URL. Supabase Image Transformation (/render/image) is a paid-tier feature.
-  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
+/** 480px copy for the gallery grid. */
+export function getThumbnailUrl(photo: PhotoPaths): string {
+  return publicUrl(photo.thumbPath || photo.displayPath || photo.storagePath);
 }
 
-/**
- * Raw (untransformed) public URL for downloads.
- * Returns the original JPEG at upload quality.
- */
-export function getRawUrl(storagePath: string): string {
-  return `${supabaseUrl}/storage/v1/object/public/${BUCKET}/${storagePath}`;
+/** 1600px copy for the lightbox. */
+export function getFullSizeUrl(photo: PhotoPaths): string {
+  return publicUrl(photo.displayPath || photo.storagePath);
+}
+
+/** Original upload, for downloads. */
+export function getRawUrl(photo: PhotoPaths): string {
+  return publicUrl(photo.storagePath);
 }

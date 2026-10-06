@@ -1,15 +1,16 @@
-import React, { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, collection, query, orderBy, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
+import { doc, collection, query, orderBy, getDocs, onSnapshot, deleteDoc } from "firebase/firestore";
 import { db, auth, logFirestoreError, OperationType } from "../lib/firebase";
-import { deletePhoto } from "../lib/supabase";
+import { deletePhotoFiles } from "../lib/supabase";
 import { getThumbnailUrl, getFullSizeUrl, getRawUrl } from "../lib/imageUrl";
 import { Gallery, Photo, Contributor } from "../types";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import LoadingScreen from "../components/LoadingScreen";
 import { motion, AnimatePresence } from "motion/react";
-import { Camera, ChevronLeft, ChevronRight, Trash2, Download, X } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, Trash2, Download, X, EyeOff, Share2 } from "lucide-react";
+import { guestsCanView, isHostFirst, setGalleryShared } from "../lib/gallery";
 import { format } from "date-fns";
 import JSZip from "jszip";
 
@@ -160,7 +161,7 @@ function LightboxCarousel({
         <div className="max-w-lg w-full">
           <div className="bg-card rounded-[2.5rem] overflow-hidden shadow-2xl border border-white/5">
             <img
-              src={getFullSizeUrl(photo.storagePath)}
+              src={getFullSizeUrl(photo)}
               className="w-full max-h-[65vh] object-contain bg-black"
               draggable={false}
             />
@@ -264,6 +265,58 @@ function LightboxCarousel({
   );
 }
 
+/* ─────────────────────────── Grid layout helpers ───────────────────────────── */
+
+/** Photos rendered per "page" as the guest scrolls; keeps the DOM small for large events. */
+const GRID_PAGE_SIZE = 60;
+/** Photos per zip when downloading everything; keeps phone memory in check. */
+const ZIP_CHUNK_SIZE = 200;
+/** Parallel fetches while zipping. */
+const DOWNLOAD_CONCURRENCY = 4;
+
+function isLandscapePhoto(photo: Photo): boolean {
+  return photo.width && photo.height ? photo.width > photo.height : false;
+}
+
+/**
+ * Masonry by shortest column. Deterministic for any prefix of `photos`, so
+ * appending a page never moves tiles that are already on screen (CSS columns would).
+ */
+function layoutColumns(photos: Photo[], columnCount: number): { photo: Photo; index: number }[][] {
+  const columns: { photo: Photo; index: number }[][] = Array.from({ length: columnCount }, () => []);
+  const heights = new Array(columnCount).fill(0);
+  photos.forEach((photo, index) => {
+    const shortest = heights.indexOf(Math.min(...heights));
+    columns[shortest].push({ photo, index });
+    heights[shortest] += isLandscapePhoto(photo) ? 3 / 4 : 4 / 3;
+  });
+  return columns;
+}
+
+function useColumnCount(): number {
+  const query = "(min-width: 768px)"; // Tailwind `md`
+  const [count, setCount] = useState(() => (window.matchMedia(query).matches ? 3 : 2));
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setCount(mql.matches ? 3 : 2);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+  return count;
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Give the browser a moment to start the download before releasing the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 /* ─────────────────────────── Main Gallery View ─────────────────────────────── */
 
 export default function GalleryView() {
@@ -278,58 +331,105 @@ export default function GalleryView() {
   const [deleting, setDeleting] = useState(false);
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [sharing, setSharing] = useState(false);
+
+  const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const columnCount = useColumnCount();
 
   const isCreator = auth.currentUser?.uid === gallery?.creatorId;
   const selectedPhoto = selectedIndex !== null ? photos[selectedIndex] : null;
+
+  const columns = useMemo(
+    () => layoutColumns(photos.slice(0, visibleCount), columnCount),
+    [photos, visibleCount, columnCount]
+  );
+
+  // Render the next page of tiles when the guest is within ~1.5 screens of the bottom.
+  // Also re-checked after every page renders, so a tall screen fills itself.
+  useEffect(() => {
+    if (loading || visibleCount >= photos.length) return;
+    const check = () => {
+      const sentinel = sentinelRef.current;
+      if (sentinel && sentinel.getBoundingClientRect().top < window.innerHeight * 2.5) {
+        setVisibleCount((c) => Math.min(c + GRID_PAGE_SIZE, photos.length));
+      }
+    };
+    check();
+    window.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    return () => {
+      window.removeEventListener("scroll", check);
+      window.removeEventListener("resize", check);
+    };
+  }, [photos.length, visibleCount, loading]);
 
   useEffect(() => {
     if (!id) return;
 
     let unsubPhotos: (() => void) | undefined;
-
-    const checkReveal = async () => {
-      try {
-        const gDoc = await getDoc(doc(db, "galleries", id));
-        if (!gDoc.exists()) {
-          navigate("/");
-          return;
-        }
-        const gData = { id: gDoc.id, ...gDoc.data() } as Gallery;
-        setGallery(gData);
-
-        const now = new Date();
-        if (gData.revealAt.toDate() > now) {
-          navigate(`/join/${id}`);
-          return;
-        }
-
-        // Fetch contributors to map names
-        const cSnap = await getDocs(collection(db, "galleries", id, "contributors"));
-        const cMap: Record<string, Contributor> = {};
-        cSnap.forEach(doc => {
-          cMap[doc.id] = { id: doc.id, ...doc.data() } as Contributor;
-        });
-        setContributors(cMap);
-
-        // Listen for photos
-        const q = query(collection(db, "galleries", id, "photos"), orderBy("createdAt", "asc"));
-        unsubPhotos = onSnapshot(q, (snap) => {
-          const pList: Photo[] = [];
-          snap.forEach(doc => pList.push({ id: doc.id, ...doc.data() } as Photo));
-          setPhotos(pList);
-          setLoading(false);
-        }, (error) => {
-          logFirestoreError(error, OperationType.LIST, `galleries/${id}/photos`);
-        });
-      } catch (error) {
-        logFirestoreError(error, OperationType.GET, `galleries/${id}`);
-      }
+    let contributorsRequested = false;
+    const stopPhotos = () => {
+      unsubPhotos?.();
+      unsubPhotos = undefined;
     };
 
-    checkReveal();
+    // Live gallery doc: picks up the host sharing (or un-sharing) a private reveal.
+    const unsubGallery = onSnapshot(doc(db, "galleries", id), (gDoc) => {
+      if (!gDoc.exists()) {
+        navigate("/");
+        return;
+      }
+      const gData = { id: gDoc.id, ...gDoc.data() } as Gallery;
+      setGallery(gData);
+
+      if (gData.revealAt.toDate() > new Date()) {
+        navigate(`/join/${id}`);
+        return;
+      }
+
+      const canView = auth.currentUser?.uid === gData.creatorId || guestsCanView(gData);
+      if (!canView) {
+        // Private reveal not shared yet: the rules would reject the photos query.
+        stopPhotos();
+        setPhotos([]);
+        setLoading(false);
+        return;
+      }
+      if (unsubPhotos) return;
+
+      // Fetch contributors to map names
+      if (!contributorsRequested) {
+        contributorsRequested = true;
+        getDocs(collection(db, "galleries", id, "contributors"))
+          .then((cSnap) => {
+            const cMap: Record<string, Contributor> = {};
+            cSnap.forEach(doc => {
+              cMap[doc.id] = { id: doc.id, ...doc.data() } as Contributor;
+            });
+            setContributors(cMap);
+          })
+          .catch((error) => logFirestoreError(error, OperationType.LIST, `galleries/${id}/contributors`));
+      }
+
+      // Listen for photos
+      const q = query(collection(db, "galleries", id, "photos"), orderBy("createdAt", "asc"));
+      unsubPhotos = onSnapshot(q, (snap) => {
+        const pList: Photo[] = [];
+        snap.forEach(doc => pList.push({ id: doc.id, ...doc.data() } as Photo));
+        setPhotos(pList);
+        setLoading(false);
+      }, (error) => {
+        logFirestoreError(error, OperationType.LIST, `galleries/${id}/photos`);
+        setLoading(false);
+      });
+    }, (error) => {
+      logFirestoreError(error, OperationType.GET, `galleries/${id}`);
+    });
 
     return () => {
-      unsubPhotos?.();
+      unsubGallery();
+      stopPhotos();
     };
   }, [id]);
 
@@ -363,7 +463,7 @@ export default function GalleryView() {
 
     setDeleting(true);
     try {
-      await deletePhoto(selectedPhoto.storagePath);
+      await deletePhotoFiles([selectedPhoto.storagePath, selectedPhoto.displayPath, selectedPhoto.thumbPath]);
       await deleteDoc(doc(db, "galleries", id, "photos", selectedPhoto.id));
 
       if (photos.length <= 1) {
@@ -383,7 +483,7 @@ export default function GalleryView() {
   const handleDownload = async () => {
     if (!selectedPhoto) return;
     try {
-      const response = await fetch(getRawUrl(selectedPhoto.storagePath));
+      const response = await fetch(getRawUrl(selectedPhoto));
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -405,45 +505,51 @@ export default function GalleryView() {
     }
   };
 
-  // Bulk download gallery
+  // Bulk download gallery — zips of ZIP_CHUNK_SIZE photos so phones don't run out of memory.
   const handleDownloadAll = async () => {
     if (photos.length === 0 || downloadingAll || !gallery) return;
     setDownloadingAll(true);
     setDownloadProgress(0);
 
-    const zip = new JSZip();
+    const sanitizedTitle = gallery.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const indexWidth = Math.max(2, String(photos.length).length);
+    const chunkCount = Math.ceil(photos.length / ZIP_CHUNK_SIZE);
+    let done = 0;
 
     try {
-      for (let i = 0; i < photos.length; i++) {
-        const photo = photos[i];
-        const nickname = contributors[photo.contributorId]?.nickname || "Guest";
-        
-        let dateStr = "unknown";
-        try {
-          dateStr = format(photo.createdAt.toDate(), "yyyy-MM-dd_HH-mm-ss");
-        } catch {}
+      for (let chunk = 0; chunk < chunkCount; chunk++) {
+        const zip = new JSZip();
+        const chunkStart = chunk * ZIP_CHUNK_SIZE;
+        const chunkPhotos = photos.slice(chunkStart, chunkStart + ZIP_CHUNK_SIZE);
 
-        // Format name: 01_Nickname_2026-06-08_10-40-00.jpg
-        const filename = `${String(i + 1).padStart(2, '0')}_${nickname}_${dateStr}.jpg`;
+        // Small worker pool: DOWNLOAD_CONCURRENCY fetches in flight at a time.
+        let next = 0;
+        const worker = async () => {
+          while (next < chunkPhotos.length) {
+            const offset = next++;
+            const photo = chunkPhotos[offset];
+            const nickname = contributors[photo.contributorId]?.nickname || "Guest";
+            let dateStr = "unknown";
+            try {
+              dateStr = format(photo.createdAt.toDate(), "yyyy-MM-dd_HH-mm-ss");
+            } catch {}
 
-        const response = await fetch(getRawUrl(photo.storagePath));
-        if (!response.ok) throw new Error(`Failed to fetch photo ${photo.id}`);
-        const blob = await response.blob();
-        
-        zip.file(filename, blob);
-        setDownloadProgress(Math.round(((i + 1) / photos.length) * 100));
+            // Format name: 0001_Nickname_2026-06-08_10-40-00.jpg
+            const n = String(chunkStart + offset + 1).padStart(indexWidth, '0');
+            const response = await fetch(getRawUrl(photo));
+            if (!response.ok) throw new Error(`Failed to fetch photo ${photo.id}`);
+            zip.file(`${n}_${nickname}_${dateStr}.jpg`, await response.blob());
+
+            done++;
+            setDownloadProgress(Math.round((done / photos.length) * 100));
+          }
+        };
+        await Promise.all(Array.from({ length: DOWNLOAD_CONCURRENCY }, worker));
+
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const suffix = chunkCount > 1 ? `_part${chunk + 1}of${chunkCount}` : "";
+        triggerDownload(zipBlob, `${sanitizedTitle}_memories${suffix}.zip`);
       }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      const sanitizedTitle = gallery.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-      a.download = `${sanitizedTitle}_memories.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
     } catch (error) {
       console.error("Bulk download failed:", error);
       alert("Failed to download gallery. Please try again.");
@@ -453,6 +559,36 @@ export default function GalleryView() {
   };
 
   if (loading || !gallery) return <LoadingScreen message="Unlocking memories..." />;
+
+  // Private reveal, not shared yet — guests wait here; the snapshot listener swaps in the photos once shared.
+  if (!isCreator && !guestsCanView(gallery)) {
+    return (
+      <PageWrapper>
+        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-10">
+          <Badge label="Almost ready" />
+          <div className="space-y-4">
+            <h2 className="text-4xl font-serif italic text-white/90 leading-tight">{gallery.title}</h2>
+            <p className="text-text-muted text-sm max-w-[280px] mx-auto italic leading-relaxed">
+              The host is putting the finishing touches on your gallery. This page will open by itself the moment it's shared.
+            </p>
+          </div>
+        </div>
+      </PageWrapper>
+    );
+  }
+
+  const handleToggleShared = async () => {
+    if (!id || sharing) return;
+    setSharing(true);
+    try {
+      await setGalleryShared(id, !gallery.sharedAt);
+    } catch (err) {
+      logFirestoreError(err, OperationType.UPDATE, `galleries/${id}`);
+      alert("Couldn't update sharing. Please try again.");
+    } finally {
+      setSharing(false);
+    }
+  };
 
   return (
     <PageWrapper>
@@ -464,6 +600,24 @@ export default function GalleryView() {
             Memories from {format(gallery.revealAt.toDate(), "MMMM do, yyyy")}
           </p>
         </div>
+
+        {isCreator && isHostFirst(gallery) && (
+          <div className="w-full p-4 rounded-2xl bg-card border border-accent/20 flex items-center gap-3 text-left">
+            {gallery.sharedAt ? <Share2 size={16} className="text-accent shrink-0" /> : <EyeOff size={16} className="text-accent shrink-0" />}
+            <p className="flex-1 text-xs text-text-muted">
+              {gallery.sharedAt ? "Shared with your guests." : "Only you can see these photos."}
+            </p>
+            <button
+              onClick={handleToggleShared}
+              disabled={sharing}
+              className={`shrink-0 px-4 py-2 rounded-full font-bold text-[10px] uppercase tracking-[0.15em] active:scale-95 transition-all disabled:opacity-50 ${
+                gallery.sharedAt ? "bg-white/10 text-white/80" : "bg-accent text-zinc-950"
+              }`}
+            >
+              {sharing ? "Saving..." : gallery.sharedAt ? "Make private" : "Share with guests"}
+            </button>
+          </div>
+        )}
 
         {photos.length > 0 && (
           <div className="pt-2">
@@ -492,39 +646,44 @@ export default function GalleryView() {
         )}
       </div>
 
-      <div className="columns-2 md:columns-3 gap-4 space-y-4 [column-fill:_balance] box-border">
-        <AnimatePresence>
-          {photos.map((photo, i) => {
-            const isLandscape = photo.width && photo.height ? photo.width > photo.height : false;
-            return (
-              <motion.div
-                key={photo.id}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: i * 0.05 }}
-                onClick={() => { setSelectedIndex(i); setConfirmDelete(false); }}
-                className={`break-inside-avoid mb-4 relative ${
-                  isLandscape ? "aspect-[4/3]" : "aspect-[3/4]"
-                } bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer`}
-              >
-                <img 
-                  src={getThumbnailUrl(photo.storagePath)} 
-                  className="w-full h-full object-cover transition-all duration-700 group-hover:scale-105" 
-                  loading="lazy" 
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent p-4 flex flex-col justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                   <p className="text-xs text-accent font-serif italic">
-                     {contributors[photo.contributorId]?.nickname || "Guest"}
-                   </p>
-                   <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-1">
-                      {format(photo.createdAt.toDate(), "h:mm a")}
-                   </p>
-                </div>
-              </motion.div>
-            );
-          })}
-        </AnimatePresence>
+      <div className="flex gap-4 items-start">
+        {columns.map((column, c) => (
+          <div key={c} className="flex-1 min-w-0 flex flex-col gap-4">
+            <AnimatePresence>
+              {column.map(({ photo, index }) => (
+                <motion.div
+                  key={photo.id}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  // Short stagger within each newly rendered page only, capped so later tiles never wait.
+                  transition={{ delay: Math.min(index % GRID_PAGE_SIZE, 12) * 0.03 }}
+                  onClick={() => { setSelectedIndex(index); setConfirmDelete(false); }}
+                  className={`relative ${
+                    isLandscapePhoto(photo) ? "aspect-[4/3]" : "aspect-[3/4]"
+                  } bg-card rounded-2xl overflow-hidden active:scale-95 transition-transform group cursor-pointer [content-visibility:auto]`}
+                >
+                  <img
+                    src={getThumbnailUrl(photo)}
+                    className="w-full h-full object-cover transition-all duration-700 group-hover:scale-105"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent p-4 flex flex-col justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                     <p className="text-xs text-accent font-serif italic">
+                       {contributors[photo.contributorId]?.nickname || "Guest"}
+                     </p>
+                     <p className="text-[10px] text-white/40 uppercase tracking-widest font-bold mt-1">
+                        {format(photo.createdAt.toDate(), "h:mm a")}
+                     </p>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        ))}
       </div>
+      {visibleCount < photos.length && <div ref={sentinelRef} className="h-px" />}
 
       {photos.length === 0 && (
          <div className="flex-1 flex flex-col items-center justify-center text-center p-12 space-y-4 opacity-20">
