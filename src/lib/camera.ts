@@ -1,28 +1,42 @@
 /**
  * Camera helpers for the capture screen.
+ *
+ * Two resolutions, like a native camera app:
+ *   - the live viewfinder stream, kept small enough to run smoothly
+ *   - the saved photo, taken at up to 12 MP
+ *
+ * Chrome (ImageCapture available): viewfinder at 1920×1440, full-resolution stills
+ * via ImageCapture.takePhoto(). Chrome copies every camera frame on the CPU, so a
+ * 12 MP stream makes the viewfinder stutter.
+ * Safari / iOS (no ImageCapture): the stream itself is the photo source, so ask for
+ * the full sensor; iOS handles high-resolution streams on the GPU.
  */
 
 import { fitWithinPixels } from "./imageProcessing";
 
-/**
- * Ask for the full 4:3 sensor (12 MP on most phones). `ideal` never fails: the
- * browser picks the closest mode it supports. Without these, most browsers
- * default to 640×480.
- */
-export function cameraConstraints(facing: "environment" | "user"): MediaTrackConstraints {
-  return {
-    facingMode: facing,
-    width: { ideal: 4032 },
-    height: { ideal: 3024 },
-  };
+/** Kill switch for full-resolution stills via ImageCapture (Chrome). */
+const USE_IMAGE_CAPTURE = true;
+
+/** How long the background still may take before we settle for the viewfinder frame. */
+const STILL_TIMEOUT_MS = 3000;
+
+export function supportsStillCapture(): boolean {
+  return USE_IMAGE_CAPTURE && typeof (window as any).ImageCapture === "function";
 }
 
 /**
- * The still-photo path (ImageCapture, Chrome on Android) gives better processing but
- * adds 0.3–2 s of shutter lag on many phones, so the shot lands after the moment.
- * Off by default: an instant frame from the full-resolution stream feels far better.
+ * `ideal` values never fail: the browser picks the closest mode it supports.
+ * Without them, most browsers default to 640×480.
  */
-const USE_IMAGE_CAPTURE = false;
+export function cameraConstraints(facing: "environment" | "user"): MediaTrackConstraints {
+  const [width, height] = supportsStillCapture() ? [1920, 1440] : [4032, 3024];
+  return {
+    facingMode: facing,
+    width: { ideal: width },
+    height: { ideal: height },
+    frameRate: { ideal: 30 },
+  };
+}
 
 export interface CapturedFrame {
   bitmap: ImageBitmap;
@@ -37,58 +51,58 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+/** One ImageCapture (and its photo settings) per camera track; capabilities are slow to query. */
+const stillCapturers = new WeakMap<MediaStreamTrack, Promise<{ capture: any; settings: Record<string, unknown> }>>();
+
+function stillCapturerFor(track: MediaStreamTrack) {
+  let entry = stillCapturers.get(track);
+  if (!entry) {
+    entry = (async () => {
+      const capture = new (window as any).ImageCapture(track);
+      const caps = await withTimeout<any>(capture.getPhotoCapabilities(), 1500);
+      const settings: Record<string, unknown> = {};
+      const maxW = caps?.imageWidth?.max;
+      const maxH = caps?.imageHeight?.max;
+      if (maxW && maxH) {
+        // Sensors can be 50–200 MP; ask for the 12 MP budget.
+        const fit = fitWithinPixels(maxW, maxH);
+        settings.imageWidth = fit.width;
+        settings.imageHeight = fit.height;
+      }
+      // Flash shots use the torch + viewfinder frame; keep the still path flash-free.
+      if (caps?.fillLightMode?.includes?.("off")) settings.fillLightMode = "off";
+      return { capture, settings };
+    })();
+    entry.catch(() => stillCapturers.delete(track));
+    stillCapturers.set(track, entry);
+  }
+  return entry;
+}
+
+/** Warm up ImageCapture for this track so the first shot doesn't pay for setup. */
+export function prepareStillCapture(track: MediaStreamTrack | undefined) {
+  if (track && supportsStillCapture()) stillCapturerFor(track).catch(() => {});
+}
+
 /**
- * Take a photo through the phone's still-image pipeline (ImageCapture — Chrome on
- * Android). That yields the camera's real photo processing instead of a video
- * frame. Requests a size within the 12 MP budget (sensors can be 50–200 MP).
- *
- * Returns null when unsupported or on any failure; callers fall back to the video frame.
+ * Take a full-resolution photo through the phone's still-image pipeline (Chrome).
+ * Returns null when unsupported, slow, or failing; callers keep the viewfinder frame.
  */
 export async function takeStillPhoto(track: MediaStreamTrack): Promise<CapturedFrame | null> {
-  const ImageCaptureCtor = (window as any).ImageCapture;
-  if (!USE_IMAGE_CAPTURE || !ImageCaptureCtor || track.readyState !== "live") return null;
-
+  if (!supportsStillCapture() || track.readyState !== "live") return null;
   try {
-    const imageCapture = new ImageCaptureCtor(track);
-    const caps = await withTimeout<any>(imageCapture.getPhotoCapabilities(), 1500);
-
-    const settings: Record<string, unknown> = {};
-    const maxW = caps?.imageWidth?.max;
-    const maxH = caps?.imageHeight?.max;
-    if (maxW && maxH) {
-      const fit = fitWithinPixels(maxW, maxH);
-      settings.imageWidth = fit.width;
-      settings.imageHeight = fit.height;
-    }
-    // Flash is handled by the torch pulse on the video path; keep the still path flash-free.
-    if (caps?.fillLightMode?.includes?.("off")) settings.fillLightMode = "off";
-
-    const blob: Blob = await withTimeout(imageCapture.takePhoto(settings), 4000);
+    const { capture, settings } = await stillCapturerFor(track);
+    const blob: Blob = await withTimeout(capture.takePhoto(settings), STILL_TIMEOUT_MS);
     const bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
     return { bitmap, width: bitmap.width, height: bitmap.height };
   } catch (err) {
-    console.warn("Still photo capture unavailable, using video frame:", err);
+    console.warn("Full-resolution still unavailable, keeping the viewfinder frame:", err);
     return null;
   }
 }
 
-/**
- * Grab the current frame as fast as possible. Uses the still-photo path when enabled
- * and its orientation matches the preview; otherwise snapshots the video element.
- */
-export async function grabFrame(video: HTMLVideoElement, track: MediaStreamTrack | undefined, allowStill: boolean): Promise<CapturedFrame> {
-  if (allowStill && track) {
-    const still = await takeStillPhoto(track);
-    if (still) {
-      if ((still.height > still.width) === (video.videoHeight > video.videoWidth)) return still;
-      // Orientation differs from the preview; the rotation logic assumes they match.
-      console.warn("Still photo orientation differs from preview; using video frame");
-      still.bitmap.close();
-    }
-    // Some devices end or pause the preview stream after a still capture.
-    if (video.paused) video.play().catch(() => {});
-  }
-
+/** Snapshot the current viewfinder frame. Near-instant. */
+export async function grabFrame(video: HTMLVideoElement): Promise<CapturedFrame> {
   try {
     const bitmap = await createImageBitmap(video);
     return { bitmap, width: bitmap.width, height: bitmap.height };
@@ -101,4 +115,30 @@ export async function grabFrame(video: HTMLVideoElement, track: MediaStreamTrack
     const bitmap = await createImageBitmap(canvas);
     return { bitmap, width: bitmap.width, height: bitmap.height };
   }
+}
+
+/**
+ * The photo to save: the full-resolution still if it arrives in time and matches the
+ * viewfinder's orientation (the rotation logic assumes they match), else the frame.
+ * Takes ownership of both bitmaps and closes the one not used.
+ */
+export async function pickBestSource(frame: CapturedFrame, still: Promise<CapturedFrame | null>): Promise<{ source: CapturedFrame; usedStill: boolean }> {
+  const s = await still;
+  if (s && (s.height > s.width) === (frame.height > frame.width) && s.width * s.height > frame.width * frame.height) {
+    frame.bitmap.close();
+    return { source: s, usedStill: true };
+  }
+  if (s) {
+    console.warn("Still photo orientation/size not usable; keeping the viewfinder frame");
+    s.bitmap.close();
+  }
+  return { source: frame, usedStill: false };
+}
+
+/** Human-readable stream info for the ?camdebug overlay. */
+export function describeTrack(track: MediaStreamTrack | undefined): string {
+  if (!track) return "no camera";
+  const s = track.getSettings();
+  const fps = s.frameRate ? `${Math.round(s.frameRate)}fps` : "?fps";
+  return `viewfinder ${s.width}×${s.height} ${fps} · stills ${supportsStillCapture() ? "on" : "off"}`;
 }

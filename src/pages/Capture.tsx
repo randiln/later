@@ -4,7 +4,7 @@ import { doc, onSnapshot, increment, collection, serverTimestamp, writeBatch } f
 import { db, logFirestoreError, OperationType } from "../lib/firebase";
 import { newPhotoPath, uploadJpeg } from "../lib/supabase";
 import { computeRenderParams, renderPreviewCanvas, variantPath } from "../lib/imageProcessing";
-import { cameraConstraints, grabFrame } from "../lib/camera";
+import { cameraConstraints, describeTrack, grabFrame, pickBestSource, prepareStillCapture, takeStillPhoto } from "../lib/camera";
 import { encodePhotoInBackground, warmUpPhotoEncoder } from "../lib/photoEncoder";
 import { PhotoUploadQueue, QueuedPhoto, QueueState } from "../lib/uploadQueue";
 import { Gallery, Contributor, GalleryNotificationSettings } from "../types";
@@ -64,6 +64,11 @@ export default function Capture() {
   const [queueState, setQueueState] = useState<QueueState>({ queued: 0, retrying: false });
   /** Shots grabbed but still being encoded (not yet in the upload queue). */
   const [encoding, setEncoding] = useState(0);
+  /** `?camdebug` in the URL shows stream resolution, live fps and the last shot's source. */
+  const [camDebug] = useState(() => new URLSearchParams(window.location.search).has("camdebug"));
+  const [camInfo, setCamInfo] = useState("");
+  const [camFps, setCamFps] = useState<number | null>(null);
+  const [lastShotInfo, setLastShotInfo] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [flashEnabled, setFlashEnabled] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
@@ -254,6 +259,35 @@ export default function Capture() {
       stopCamera();
     };
   }, [id]);
+
+  // The app-wide grain overlay uses a blend mode that is re-composited over every
+  // video frame; switch it off while the camera is open.
+  useEffect(() => {
+    document.documentElement.classList.add("camera-open");
+    return () => document.documentElement.classList.remove("camera-open");
+  }, []);
+
+  // ?camdebug: count frames actually delivered to the viewfinder.
+  useEffect(() => {
+    if (!camDebug || !stream) return;
+    const video = videoRef.current as (HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number }) | null;
+    if (!video?.requestVideoFrameCallback) return;
+    let frames = 0;
+    let stopped = false;
+    const onFrame = () => {
+      frames++;
+      if (!stopped) video.requestVideoFrameCallback!(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+    const timer = window.setInterval(() => {
+      setCamFps(frames);
+      frames = 0;
+    }, 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [camDebug, stream]);
 
   // Background upload queue: resumes shots left over from a previous visit.
   useEffect(() => {
@@ -498,6 +532,10 @@ export default function Capture() {
         // Explicitly play for iOS Safari reliability
         videoRef.current.play().catch(e => console.error("Video play failed:", e));
       }
+      const videoTrack = s.getVideoTracks()[0];
+      prepareStillCapture(videoTrack);
+      setCamInfo(describeTrack(videoTrack));
+      console.log("Camera stream:", videoTrack?.getSettings());
       // Check for multiple cameras now that camera permission has been granted
       navigator.mediaDevices.enumerateDevices().then(devices => {
         const videoInputs = devices.filter(d => d.kind === "videoinput");
@@ -664,29 +702,27 @@ export default function Capture() {
       setFlashEffect(true);
       setTimeout(() => setFlashEffect(false), 150);
 
-      const frame = await grabFrame(video, streamRef.current?.getVideoTracks()[0], !shouldFlash);
+      // The viewfinder frame is the moment the guest saw: grab it first, instantly.
+      const frame = await grabFrame(video);
       if (shouldFlash) endFlash();
+
+      // Meanwhile ask for the full-resolution still (Chrome). It never delays the UI:
+      // the polaroid uses the frame, and the saved photo falls back to it if the still is slow.
+      const track = streamRef.current?.getVideoTracks()[0];
+      const stillStartedAt = performance.now();
+      const still = !shouldFlash && track ? takeStillPhoto(track) : Promise.resolve(null);
 
       // Counts against shots left immediately, before anything is uploaded.
       setSessionShots((n) => n + 1);
       reserved = true;
       const shotNumber = shotsTaken + 1;
-
-      const params = computeRenderParams(frame.width, frame.height, hasNativeZoom ? 1 : zoom, deviceOrientationAngle);
-      console.log("Photo capture diagnostics:", {
-        frameWidth: frame.width,
-        frameHeight: frame.height,
-        deviceOrientationAngle,
-        rotate: params.rotate,
-        outputWidth: params.outW,
-        outputHeight: params.outH,
-        zoom,
-        hasNativeZoom,
-      });
+      const zoomRatio = hasNativeZoom ? 1 : zoom;
+      const angle = deviceOrientationAngle;
+      const previewParams = computeRenderParams(frame.width, frame.height, zoomRatio, angle);
 
       // Instant polaroid: draw the frame into a small on-screen canvas (no encoding).
       if (mountedRef.current) {
-        setShot({ canvas: renderPreviewCanvas(frame.bitmap, params, 900), landscape: params.outW > params.outH, number: shotNumber });
+        setShot({ canvas: renderPreviewCanvas(frame.bitmap, previewParams, 900), landscape: previewParams.outW > previewParams.outH, number: shotNumber });
         window.clearTimeout(shotTimerRef.current);
         shotTimerRef.current = window.setTimeout(dismissShot, SHOT_PREVIEW_MS);
       }
@@ -694,7 +730,17 @@ export default function Capture() {
 
       setEncoding((n) => n + 1);
       const contributorId = contributor.id;
-      encodePhotoInBackground(frame.bitmap, params)
+      pickBestSource(frame, still)
+        .then(({ source, usedStill }) => {
+          // Some devices pause the viewfinder during a still capture.
+          if (video.paused) video.play().catch(() => {});
+          const params = computeRenderParams(source.width, source.height, zoomRatio, angle);
+          const info = `${usedStill ? "still" : "frame"} ${params.outW}×${params.outH}` +
+            (usedStill ? ` in ${Math.round(performance.now() - stillStartedAt)}ms` : "");
+          console.log("Photo capture diagnostics:", { source: info, deviceOrientationAngle: angle, rotate: params.rotate, zoom, hasNativeZoom });
+          if (mountedRef.current) setLastShotInfo(info);
+          return encodePhotoInBackground(source.bitmap, params);
+        })
         .then((encoded) => {
           const storagePath = newPhotoPath(id, contributorId);
           // Same tick as the queue's own update, so the saving count doesn't flicker.
@@ -877,7 +923,7 @@ export default function Capture() {
 
           {/* Save error toast - shown over camera, dismissable */}
           {error && stream && (
-            <div className="absolute top-24 inset-x-4 z-40 bg-red-950/90 backdrop-blur-md border border-red-500/30 rounded-2xl p-4 flex items-start space-x-3 pointer-events-auto">
+            <div className="absolute top-24 inset-x-4 z-40 bg-red-950/95 border border-red-500/30 rounded-2xl p-4 flex items-start space-x-3 pointer-events-auto">
               <p className="text-red-300 text-xs flex-1 leading-relaxed">{error}</p>
               <button onClick={() => setError(null)} className="text-red-400 text-xs font-bold uppercase tracking-widest shrink-0">Dismiss</button>
             </div>
@@ -969,6 +1015,14 @@ export default function Capture() {
             )}
           </AnimatePresence>
 
+          {camDebug && (
+            <div className="absolute top-2 inset-x-0 z-40 flex justify-center pointer-events-none">
+              <p className="bg-black/70 text-[10px] font-mono text-white/80 px-2 py-1 rounded">
+                {camInfo} · live {camFps ?? "?"}fps{lastShotInfo && ` · last: ${lastShotInfo}`}
+              </p>
+            </div>
+          )}
+
           {/* UI Overlays */}
           <div className="absolute top-0 inset-x-0 p-8 flex justify-between items-start pointer-events-none z-30">
             <div className="flex items-center space-x-3 pointer-events-auto">
@@ -976,14 +1030,14 @@ export default function Capture() {
                 <button
                   onClick={flipCamera}
                   disabled={busy || !!shot}
-                  className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
+                  className="w-12 h-12 bg-black/55 rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
                 >
                   <SwitchCamera size={18} className="text-white/60" style={iconStyle} />
                 </button>
               )}
               {!isLandscape && (
                 <div className="flex flex-col items-start gap-2" style={iconStyle}>
-                  <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10">
+                  <div className="bg-black/55 px-4 py-2.5 rounded-2xl border border-white/10">
                     <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
                     <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
                   </div>
@@ -995,7 +1049,7 @@ export default function Capture() {
             <div className="flex items-center space-x-3 pointer-events-auto">
               <button
                 onClick={() => setShowTutorial(true)}
-                className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
+                className="w-12 h-12 bg-black/55 rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
               >
                 <HelpCircle size={18} className="text-white/60" style={iconStyle} />
               </button>
@@ -1003,10 +1057,10 @@ export default function Capture() {
               {hasTorch && (
                 <button
                   onClick={toggleFlash}
-                  className={`w-12 h-12 backdrop-blur-xl rounded-full border flex items-center justify-center active:scale-90 transition-all ${
+                  className={`w-12 h-12 rounded-full border flex items-center justify-center active:scale-90 transition-all ${
                     flashEnabled
                       ? 'bg-accent/20 border-accent/40 text-accent'
-                      : 'bg-black/40 border-white/10 text-white/60'
+                      : 'bg-black/55 border-white/10 text-white/60'
                   }`}
                 >
                   <div style={iconStyle}>
@@ -1016,7 +1070,7 @@ export default function Capture() {
               )}
               <button
                 onClick={pauseCamera}
-                className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
+                className="w-12 h-12 bg-black/55 rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform"
               >
                 <LogOut size={18} className="text-white/60" style={iconStyle} />
               </button>
@@ -1080,7 +1134,7 @@ export default function Capture() {
               }}
             >
               {/* Contributor Label */}
-              <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-2">
+              <div className="bg-black/55 px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-2">
                 <div className="w-1.5 h-1.5 bg-accent rounded-full" />
                 <p className="text-[9px] uppercase tracking-widest text-accent font-bold opacity-80 italic">
                   Contributor: {contributor.nickname}
@@ -1088,7 +1142,7 @@ export default function Capture() {
               </div>
 
               {/* Shots Remaining */}
-              <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-3">
+              <div className="bg-black/55 px-4 py-2.5 rounded-2xl border border-white/10 flex items-center space-x-3">
                 <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
                 <p className="text-xl font-serif italic text-accent leading-none">{shotsLeft} / {gallery.maxShots}</p>
               </div>
@@ -1125,7 +1179,7 @@ function SavingPill({ label, retrying }: { label: string | null; retrying: boole
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -4 }}
-          className={`flex items-center gap-1.5 bg-black/50 backdrop-blur-xl px-3 py-1.5 rounded-full border ${
+          className={`flex items-center gap-1.5 bg-black/60 px-3 py-1.5 rounded-full border ${
             retrying ? "border-amber-400/30" : "border-white/10"
           }`}
         >

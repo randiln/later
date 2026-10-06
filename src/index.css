@@ -49,3 +49,9 @@
   background-image: url('https://grainy-gradients.vercel.app/noise.svg');
 }
 
+/* The camera screen covers these anyway; skip blending them over every video frame. */
+.camera-open .grainy::before,
+.camera-open .atmosphere {
+  display: none;
+}
+
