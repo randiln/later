@@ -1,17 +1,19 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { doc, onSnapshot, increment, collection, serverTimestamp, writeBatch } from "firebase/firestore";
 import { db, logFirestoreError, OperationType } from "../lib/firebase";
 import { newPhotoPath, uploadJpeg } from "../lib/supabase";
-import { createVariants, fitWithinPixels, ORIGINAL_QUALITY, variantPath, VariantName } from "../lib/imageProcessing";
-import { cameraConstraints, takeStillPhoto } from "../lib/camera";
+import { computeRenderParams, renderPreviewCanvas, variantPath } from "../lib/imageProcessing";
+import { cameraConstraints, grabFrame } from "../lib/camera";
+import { encodePhotoInBackground, warmUpPhotoEncoder } from "../lib/photoEncoder";
+import { PhotoUploadQueue, QueuedPhoto, QueueState } from "../lib/uploadQueue";
 import { Gallery, Contributor, GalleryNotificationSettings } from "../types";
 import { isHostFirst } from "../lib/gallery";
 import PageWrapper from "../components/PageWrapper";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
 import { motion, AnimatePresence } from "motion/react";
-import { LogOut, Zap, ZapOff, SwitchCamera, Camera, HelpCircle } from "lucide-react";
+import { LogOut, Zap, ZapOff, SwitchCamera, Camera, HelpCircle, CloudUpload } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import TutorialPopup from "../components/TutorialPopup";
 import NotificationPrompt from "../components/NotificationPrompt";
@@ -37,6 +39,9 @@ const DEFAULT_NOTIFICATION_SETTINGS: GalleryNotificationSettings = {
   notifyOnReveal: true,
 };
 
+/** How long the polaroid stays up before the camera is ready again (tap to dismiss sooner). */
+const SHOT_PREVIEW_MS = 1300;
+
 /** Private-reveal galleries aren't viewable at reveal time, so skip the "vault is open" notification. */
 function reminderSettings(gallery: Gallery): GalleryNotificationSettings | undefined {
   if (!isHostFirst(gallery)) return gallery.notificationSettings;
@@ -50,9 +55,15 @@ export default function Capture() {
   const [contributor, setContributor] = useState<Contributor | null>(null);
   const [loading, setLoading] = useState(true);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [previewLandscape, setPreviewLandscape] = useState(false);
-  const [capturing, setCapturing] = useState(false);
+  /** The polaroid currently shown after a shot. */
+  const [shot, setShot] = useState<{ canvas: HTMLCanvasElement; landscape: boolean; number: number } | null>(null);
+  /** True only while the frame is being grabbed (a few ms); blocks double taps. */
+  const [busy, setBusy] = useState(false);
+  /** Shots taken this visit (plus leftovers from a previous visit not yet counted by the server). */
+  const [sessionShots, setSessionShots] = useState(0);
+  const [queueState, setQueueState] = useState<QueueState>({ queued: 0, retrying: false });
+  /** Shots grabbed but still being encoded (not yet in the upload queue). */
+  const [encoding, setEncoding] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [flashEnabled, setFlashEnabled] = useState(false);
   const [hasTorch, setHasTorch] = useState(false);
@@ -182,9 +193,13 @@ export default function Capture() {
   const [focusActive, setFocusActive] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const mountedRef = useRef(true);
+  const queueRef = useRef<PhotoUploadQueue | null>(null);
+  const shotTimerRef = useRef<number | undefined>(undefined);
+  /** shotsTaken from the first contributor snapshot of this visit. */
+  const baselineTakenRef = useRef<number | null>(null);
+  const shotsLeftRef = useRef(0);
 
   // The <video> only renders once Firestore data has loaded, which can be after
   // getUserMedia resolves. Attach the stream whenever the element (re)mounts.
@@ -219,7 +234,9 @@ export default function Capture() {
 
     const unsubC = onSnapshot(doc(db, "galleries", id, "contributors", contributorId), (docSnap) => {
       if (docSnap.exists()) {
-        setContributor({ id: docSnap.id, ...docSnap.data() } as Contributor);
+        const c = { id: docSnap.id, ...docSnap.data() } as Contributor;
+        if (baselineTakenRef.current === null) baselineTakenRef.current = c.shotsTaken;
+        setContributor(c);
         setLoading(false);
       } else {
         navigate(`/join/${id}`);
@@ -237,6 +254,77 @@ export default function Capture() {
       stopCamera();
     };
   }, [id]);
+
+  // Background upload queue: resumes shots left over from a previous visit.
+  useEffect(() => {
+    if (!id) return;
+    warmUpPhotoEncoder();
+    const queue = new PhotoUploadQueue({
+      galleryId: id,
+      upload: uploadJpeg,
+      commit: async (item: QueuedPhoto) => {
+        // Photo doc + shot increment land together or not at all.
+        const batch = writeBatch(db);
+        batch.set(doc(db, "galleries", item.galleryId, "photos", item.id), {
+          galleryId: item.galleryId,
+          contributorId: item.contributorId,
+          storagePath: item.storagePath,
+          ...(item.done.display ? { displayPath: item.displayPath } : {}),
+          ...(item.done.thumb ? { thumbPath: item.thumbPath } : {}),
+          width: item.width,
+          height: item.height,
+          createdAt: serverTimestamp(),
+        });
+        batch.update(doc(db, "galleries", item.galleryId, "contributors", item.contributorId), {
+          shotsTaken: increment(1),
+        });
+        try {
+          await batch.commit();
+        } catch (err: any) {
+          logFirestoreError(err, OperationType.WRITE, `galleries/${item.galleryId}/photos/${item.id}`);
+          if (err?.code === "permission-denied") {
+            throw Object.assign(new Error("A photo couldn't be saved because the event has closed."), { code: err.code });
+          }
+          throw err;
+        }
+      },
+      onChange: (state) => { if (mountedRef.current) setQueueState(state); },
+      onSaved: () => {
+        // Notify SW: photo taken, update shot count, reset inactivity timer
+        notifyPhotoTaken(id, shotsLeftRef.current);
+        reminderCount.current = 0;
+        if (shotsLeftRef.current <= 0) cancelReminders(id);
+      },
+      onFailed: (_item, message) => {
+        if (!mountedRef.current) return;
+        setSessionShots((n) => n - 1);
+        setError(message);
+      },
+    });
+    queueRef.current = queue;
+    let active = true;
+    queue.start().then((uncounted) => {
+      if (uncounted && active) setSessionShots((n) => n + uncounted);
+    });
+    return () => {
+      active = false;
+      queue.stop();
+      queueRef.current = null;
+      window.clearTimeout(shotTimerRef.current);
+    };
+  }, [id]);
+
+  // Warn before leaving while photos are still being saved.
+  const unsaved = queueState.queued + encoding;
+  useEffect(() => {
+    if (!unsaved) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [unsaved]);
 
   // Check if tutorial has been seen yet, only after data finishes loading
   useEffect(() => {
@@ -367,14 +455,21 @@ export default function Capture() {
     if (id) localStorage.setItem(`later_notif_prompted_${id}`, 'true');
   };
 
-  // Release the camera once the guest has used all their shots.
+  // Shots used counts the ones still uploading, so the guest can't overshoot while offline.
+  const shotsTaken = contributor
+    ? Math.max(contributor.shotsTaken, (baselineTakenRef.current ?? contributor.shotsTaken) + sessionShots)
+    : 0;
+  const shotsLeft = gallery ? Math.max(0, gallery.maxShots - shotsTaken) : 0;
+  shotsLeftRef.current = shotsLeft;
+
+  // Release the camera once the guest has used all their shots (after the last polaroid).
   useEffect(() => {
-    if (gallery && contributor && contributor.shotsTaken >= gallery.maxShots) {
+    if (gallery && contributor && shotsLeft <= 0 && !shot && !busy) {
       stopCamera();
       // Cancel notifications when all shots are used
       if (id) cancelReminders(id);
     }
-  }, [gallery, contributor]);
+  }, [gallery, contributor, shotsLeft, shot, busy]);
 
   const startCamera = async (facing: "environment" | "user") => {
     // Reset zoom state on new camera stream initialization
@@ -536,223 +631,130 @@ export default function Capture() {
     }
   };
 
-  const takePhoto = async () => {
-    if (!videoRef.current || !canvasRef.current || !gallery || !contributor || capturing) return;
-    if (contributor.shotsTaken >= gallery.maxShots) return;
+  const dismissShot = () => {
+    window.clearTimeout(shotTimerRef.current);
+    setShot(null);
+  };
 
-    setCapturing(true);
-    setError(null);
+  /**
+   * Shutter. Only the frame grab and a small preview are on the critical path
+   * (~100 ms): full-size encoding runs in a worker and uploading in the background
+   * queue, so the camera is ready again as soon as the polaroid is dismissed.
+   */
+  const takePhoto = async () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
+    if (!video || !gallery || !contributor || !id || busy || shot) return;
+    if (shotsLeft <= 0) return;
+    if (video.readyState < 2 || !video.videoWidth) {
+      setError("The camera is still starting. Try again in a second.");
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    navigator.vibrate?.(12);
 
     // Fire flash if enabled and torch is supported
     const shouldFlash = hasTorch && flashEnabled;
-    if (shouldFlash) {
-      await fireFlash();
-    }
+    let reserved = false;
+    try {
+      if (shouldFlash) await fireFlash();
 
-    // Show white flash overlay
-    setFlashEffect(true);
-    setTimeout(() => setFlashEffect(false), 150);
+      // Show white flash overlay at the moment of capture
+      setFlashEffect(true);
+      setTimeout(() => setFlashEffect(false), 150);
 
-    // Prefer the phone's still-photo pipeline (better processing than a video frame).
-    // With flash on, stay on the proven torch + video-frame path.
-    const track = streamRef.current?.getVideoTracks()[0];
-    let still = !shouldFlash && track ? await takeStillPhoto(track) : null;
-    const videoPortrait = video.videoHeight > video.videoWidth;
-    if (still && (still.height > still.width) !== videoPortrait) {
-      // Orientation differs from the preview; the rotation logic below assumes they match.
-      console.warn("Still photo orientation differs from preview; using video frame");
-      still.release();
-      still = null;
-    }
-    // Some devices end or pause the preview stream after a still capture.
-    if (track && track.readyState === "ended") startCamera(facingMode);
-    else if (video.paused) video.play().catch(() => {});
+      const frame = await grabFrame(video, streamRef.current?.getVideoTracks()[0], !shouldFlash);
+      if (shouldFlash) endFlash();
 
-    const source: CanvasImageSource = still ? still.source : video;
-    const width = still ? still.width : video.videoWidth || 640;
-    const height = still ? still.height : video.videoHeight || 480;
+      // Counts against shots left immediately, before anything is uploaded.
+      setSessionShots((n) => n + 1);
+      reserved = true;
+      const shotNumber = shotsTaken + 1;
 
-    // Digital zoom (when the camera has no native zoom) crops the centre of the frame.
-    const zoomRatio = hasNativeZoom ? 1 : zoom;
-    const sourceW = width / zoomRatio;
-    const sourceH = height / zoomRatio;
-    const sourceX = (width - sourceW) / 2;
-    const sourceY = (height - sourceH) / 2;
+      const params = computeRenderParams(frame.width, frame.height, hasNativeZoom ? 1 : zoom, deviceOrientationAngle);
+      console.log("Photo capture diagnostics:", {
+        frameWidth: frame.width,
+        frameHeight: frame.height,
+        deviceOrientationAngle,
+        rotate: params.rotate,
+        outputWidth: params.outW,
+        outputHeight: params.outH,
+        zoom,
+        hasNativeZoom,
+      });
 
-    // Detect device orientation — if device is landscape but the frame is portrait, rotate
-    const normAngle = deviceOrientationAngle;
-    const isDeviceLandscape = normAngle === 90 || normAngle === 270;
-    const isVideoPortrait = height > width;
-    const shouldRotate = isDeviceLandscape && isVideoPortrait;
-
-    // Output size: the cropped area (never upscaled), rotated if needed, capped at 12 MP.
-    const croppedW = Math.round(shouldRotate ? sourceH : sourceW);
-    const croppedH = Math.round(shouldRotate ? sourceW : sourceH);
-    const { width: effectiveW, height: effectiveH } = fitWithinPixels(croppedW, croppedH);
-
-    console.log("Photo capture diagnostics:", {
-      source: still ? "still" : "video",
-      frameWidth: width,
-      frameHeight: height,
-      deviceOrientationAngle: normAngle,
-      isDeviceLandscape,
-      isVideoPortrait,
-      shouldRotate,
-      canvasWidth: effectiveW,
-      canvasHeight: effectiveH,
-      zoom,
-      hasNativeZoom
-    });
-
-    canvas.width = effectiveW;
-    canvas.height = effectiveH;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      still?.release();
-      setCapturing(false);
-      return;
-    }
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-
-    if (shouldRotate) {
-      // Rotate canvas to produce a landscape image
-      // If normAngle is 90 (landscape right), rotate 90 degrees clockwise (rotDir = 1)
-      // Otherwise (landscape left 270, or default), rotate 90 degrees counter-clockwise (rotDir = -1)
-      const rotDir = normAngle === 90 ? 1 : -1;
-      ctx.translate(effectiveW / 2, effectiveH / 2);
-      ctx.rotate((rotDir * Math.PI) / 2);
-      ctx.drawImage(source, sourceX, sourceY, sourceW, sourceH, -effectiveH / 2, -effectiveW / 2, effectiveH, effectiveW);
-    } else {
-      ctx.drawImage(source, sourceX, sourceY, sourceW, sourceH, 0, 0, effectiveW, effectiveH);
-    }
-    still?.release();
-
-    // Turn off flash after capture
-    if (shouldFlash) {
-      endFlash();
-    }
-
-    // Encode the smaller sizes first: the display copy doubles as the instant polaroid preview.
-    const variants = await createVariants(canvas);
-    const previewUrl = variants.display ? URL.createObjectURL(variants.display) : canvas.toDataURL("image/jpeg", 0.4);
-    setPreviewLandscape(effectiveW > effectiveH);
-    setPreview(previewUrl);
-
-    // Convert canvas to a JPEG blob for Supabase upload
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/jpeg", ORIGINAL_QUALITY)
-    );
-    const photoWidth = canvas.width;
-    const photoHeight = canvas.height;
-
-    if (!blob) {
-      setError("Failed to capture image. Please try again.");
-      setCapturing(false);
-      setPreview(null);
-      if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-      return;
-    }
-
-    // Show 2-second preview then upload
-    setTimeout(async () => {
-      if (!mountedRef.current) return;
-      try {
-        setPreview(null);
-        if (previewUrl.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-
-        if (!id || !contributor?.id) {
-          setError("Session expired. Please rejoin the gallery.");
-          return;
-        }
-
-        // Original first — it's the one that matters. The smaller sizes are
-        // best-effort: if one fails, the gallery falls back to the original.
-        const storagePath = newPhotoPath(id, contributor.id);
-        await uploadJpeg(blob, storagePath);
-
-        const sizePaths: Partial<Record<"displayPath" | "thumbPath", string>> = {};
-        await Promise.all(
-          (Object.keys(variants) as VariantName[]).map(async (name) => {
-            const variantBlob = variants[name];
-            if (!variantBlob) return;
-            const path = variantPath(storagePath, name);
-            try {
-              await uploadJpeg(variantBlob, path);
-              sizePaths[name === "display" ? "displayPath" : "thumbPath"] = path;
-            } catch (err) {
-              console.warn(`Optional ${name} upload failed; gallery will use the original`, err);
-            }
-          })
-        );
-
-        // Save the storage paths to Firestore
-        try {
-          await addDoc(collection(db, "galleries", id, "photos"), {
-            galleryId: id,
-            contributorId: contributor.id,
-            storagePath,
-            ...sizePaths,
-            width: photoWidth,
-            height: photoHeight,
-            createdAt: serverTimestamp()
-          });
-        } catch (err: any) {
-          console.error("Firestore photo creation failed", err);
-          throw new Error(err.code === 'permission-denied'
-            ? "Permission denied: Failed to save photo metadata. The gallery may not have started yet, or is already closed."
-            : `Failed to save photo metadata: ${err.message || err.code}`);
-        }
-
-        try {
-          await updateDoc(doc(db, "galleries", id, "contributors", contributor.id), {
-            shotsTaken: increment(1)
-          });
-
-          // Notify SW: photo taken, update shot count, reset inactivity timer
-          if (id && gallery) {
-            const newShotsLeft = gallery.maxShots - (contributor.shotsTaken + 1);
-            notifyPhotoTaken(id, newShotsLeft);
-            reminderCount.current = 0; // reset reminder count on new photo
-
-            if (newShotsLeft <= 0) {
-              cancelReminders(id);
-            }
-          }
-        } catch (err: any) {
-          console.error("Firestore contributor update failed", err);
-          throw new Error(err.code === 'permission-denied'
-            ? "Permission denied: Failed to increment shot count. Your contributor session might be invalid."
-            : `Failed to increment shot count: ${err.message || err.code}`);
-        }
-      } catch (error: any) {
-        console.error("Save process failed", error);
-        if (!mountedRef.current) return;
-        setPreview(null);
-        setError(error.message || "Failed to save photo. Please try again.");
-      } finally {
-        if (mountedRef.current) setCapturing(false);
+      // Instant polaroid: draw the frame into a small on-screen canvas (no encoding).
+      if (mountedRef.current) {
+        setShot({ canvas: renderPreviewCanvas(frame.bitmap, params, 900), landscape: params.outW > params.outH, number: shotNumber });
+        window.clearTimeout(shotTimerRef.current);
+        shotTimerRef.current = window.setTimeout(dismissShot, SHOT_PREVIEW_MS);
       }
-    }, 2000);
+      setBusy(false);
+
+      setEncoding((n) => n + 1);
+      const contributorId = contributor.id;
+      encodePhotoInBackground(frame.bitmap, params)
+        .then((encoded) => {
+          const storagePath = newPhotoPath(id, contributorId);
+          // Same tick as the queue's own update, so the saving count doesn't flicker.
+          setEncoding((n) => n - 1);
+          return queueRef.current?.enqueue({
+            id: doc(collection(db, "galleries", id, "photos")).id,
+            galleryId: id,
+            contributorId,
+            storagePath,
+            displayPath: variantPath(storagePath, "display"),
+            thumbPath: variantPath(storagePath, "thumb"),
+            original: encoded.original,
+            display: encoded.display,
+            thumb: encoded.thumb,
+            width: encoded.width,
+            height: encoded.height,
+            createdAt: Date.now(),
+            done: {},
+            attempts: 0,
+          });
+        })
+        .catch((err) => {
+          console.error("Photo encoding failed", err);
+          setEncoding((n) => Math.max(0, n - 1));
+          setSessionShots((n) => n - 1);
+          if (mountedRef.current) setError("That photo couldn't be processed. Please take it again.");
+        });
+    } catch (err) {
+      console.error("Capture failed", err);
+      if (shouldFlash) endFlash();
+      if (reserved) setSessionShots((n) => n - 1);
+      setBusy(false);
+      setError("Couldn't take the photo. Please try again.");
+    }
   };
 
   if (loading || !gallery || !contributor) return null;
 
-  const shotsLeft = gallery.maxShots - contributor.shotsTaken;
+  const savingLabel = unsaved > 0
+    ? queueState.retrying
+      ? `Waiting for signal · ${unsaved} safe on this phone`
+      : `Saving ${unsaved}`
+    : null;
 
   // ── All shots used ──
-  if (shotsLeft <= 0 && !preview && !capturing) {
+  if (shotsLeft <= 0 && !shot && !busy) {
     return (
       <PageWrapper>
         <div className="flex-1 flex flex-col items-center justify-center text-center space-y-10">
           <Badge label="Reveal Locked" />
           <div className="space-y-4">
-            <h2 className="text-4xl font-serif italic text-white/90 leading-tight">Your shots are safe in the vault ✨</h2>
+            <h2 className="text-4xl font-serif italic text-white/90 leading-tight">
+              {unsaved > 0 ? "Developing your last shots…" : "Your shots are safe in the vault ✨"}
+            </h2>
             <p className="text-text-muted text-sm max-w-[280px] mx-auto italic leading-relaxed">
-              The camera is closed, the shutter is still. We unlock the secrets soon.
+              {unsaved > 0
+                ? queueState.retrying
+                  ? `Waiting for signal. ${unsaved} ${unsaved === 1 ? "photo is" : "photos are"} safe on this phone — keep this page open.`
+                  : `Saving ${unsaved} ${unsaved === 1 ? "photo" : "photos"}. Keep this page open for a moment.`
+                : "The camera is closed, the shutter is still. We unlock the secrets soon."}
             </p>
           </div>
           <div className="py-8 w-full border-y border-white/5">
@@ -901,7 +903,7 @@ export default function Capture() {
           )}
 
           {/* Camera Grid */}
-          {!preview && !capturing && (
+          {!shot && (
             <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none">
               {[...Array(9)].map((_, i) => (
                 <div key={i} className="border-[0.5px] border-white/10" />
@@ -931,34 +933,38 @@ export default function Capture() {
             )}
           </AnimatePresence>
 
-          {/* Shoot Preview Overlay */}
+          {/* Polaroid — pops in after the flash, then flies off toward the shot counter */}
           <AnimatePresence>
-            {(preview || capturing) && (
+            {shot && (
               <motion.div
+                key={shot.number}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-md"
+                exit={{ opacity: 0, transition: { duration: 0.35 } }}
+                onClick={(e) => { e.stopPropagation(); dismissShot(); }}
+                className="absolute inset-0 z-20 flex items-center justify-center bg-black/50"
               >
-                {preview && (
+                <div style={iconStyle}>
+                <motion.div
+                  initial={{ y: 60, scale: 0.85, rotate: -5, opacity: 0 }}
+                  animate={{ y: 0, scale: 1, rotate: -1.5, opacity: 1 }}
+                  exit={{ y: -320, x: -120, scale: 0.15, rotate: -14, opacity: 0 }}
+                  transition={{ type: "spring", stiffness: 260, damping: 24 }}
+                  className="p-2.5 pb-9 bg-[#f6f1e7] rounded-[3px] shadow-2xl relative"
+                >
                   <motion.div
-                    initial={{ scale: 0.9, opacity: 0, rotate: -2 }}
-                    animate={{ scale: 1, opacity: 1, rotate: 0 }}
-                    className="relative p-2 bg-white rounded-lg shadow-2xl"
-                  >
-                    <img src={preview} className={`${previewLandscape ? 'w-[85vw] aspect-[4/3]' : 'w-[75vw] aspect-[3/4]'} object-cover rounded-sm`} />
-                    <div className="absolute top-4 right-4 flex items-center space-x-1.5 bg-black/40 backdrop-blur-md px-2 py-1 rounded-full" style={iconStyle}>
-                      <div className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
-                      <span className="text-[8px] uppercase tracking-widest font-bold text-white/80">Saving</span>
-                    </div>
-                  </motion.div>
-                )}
-                {!preview && (
-                  <div className="mt-8 flex flex-col items-center" style={iconStyle}>
-                    <div className="w-10 h-10 border-2 border-accent/30 border-t-accent rounded-full animate-spin mb-4" />
-                    <p className="text-[10px] uppercase tracking-[0.2em] font-bold text-accent italic">Developing...</p>
-                  </div>
-                )}
+                    ref={(el) => { if (el && el.firstChild !== shot.canvas) el.replaceChildren(shot.canvas); }}
+                    initial={{ filter: "brightness(0.15) sepia(0.9) contrast(0.7)" }}
+                    animate={{ filter: "brightness(1) sepia(0) contrast(1)" }}
+                    transition={{ duration: 1.1, ease: "easeOut" }}
+                    className={`${shot.landscape ? 'w-[78vw] max-w-[440px] aspect-[4/3]' : 'w-[64vw] max-w-[340px] aspect-[3/4]'} overflow-hidden bg-black [&>canvas]:w-full [&>canvas]:h-full [&>canvas]:object-cover`}
+                    data-polaroid
+                  />
+                  <p className="absolute bottom-2.5 inset-x-0 text-center font-serif italic text-[13px] text-zinc-500">
+                    Shot {shot.number} of {gallery.maxShots}
+                  </p>
+                </motion.div>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -969,16 +975,19 @@ export default function Capture() {
               {hasMultipleCameras && (
                 <button
                   onClick={flipCamera}
-                  disabled={!!preview || capturing}
+                  disabled={busy || !!shot}
                   className="w-12 h-12 bg-black/40 backdrop-blur-xl rounded-full border border-white/10 flex items-center justify-center active:scale-90 transition-transform disabled:opacity-20"
                 >
                   <SwitchCamera size={18} className="text-white/60" style={iconStyle} />
                 </button>
               )}
               {!isLandscape && (
-                <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10" style={iconStyle}>
-                  <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
-                  <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+                <div className="flex flex-col items-start gap-2" style={iconStyle}>
+                  <div className="bg-black/40 backdrop-blur-xl px-4 py-2.5 rounded-2xl border border-white/10">
+                    <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
+                    <p className="text-xl font-serif italic text-accent leading-none mt-1.5">{shotsLeft} / {gallery.maxShots}</p>
+                  </div>
+                  <SavingPill label={savingLabel} retrying={queueState.retrying} />
                 </div>
               )}
             </div>
@@ -1041,7 +1050,7 @@ export default function Capture() {
             {/* Shutter button */}
             <div className="flex flex-col items-center">
               <button
-                disabled={!!preview || capturing || shotsLeft <= 0}
+                disabled={busy || !!shot || shotsLeft <= 0}
                 onClick={takePhoto}
                 className="group relative w-20 h-20 rounded-full border-[3px] border-white/20 p-1.5 active:scale-95 transition-transform disabled:opacity-10"
               >
@@ -1083,12 +1092,12 @@ export default function Capture() {
                 <p className="text-[9px] uppercase tracking-[0.2em] text-white/40 font-bold">Shots Remaining</p>
                 <p className="text-xl font-serif italic text-accent leading-none">{shotsLeft} / {gallery.maxShots}</p>
               </div>
+              <SavingPill label={savingLabel} retrying={queueState.retrying} />
             </div>
           </div>
         )}
       </div>
 
-      <canvas ref={canvasRef} className="hidden" />
 
       <TutorialPopup
         isOpen={showTutorial}
@@ -1104,5 +1113,26 @@ export default function Capture() {
         onDismiss={handleNotifDismiss}
       />
     </div>
+  );
+}
+
+/** Small background-save status shown under the shot counter. */
+function SavingPill({ label, retrying }: { label: string | null; retrying: boolean }) {
+  return (
+    <AnimatePresence>
+      {label && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          className={`flex items-center gap-1.5 bg-black/50 backdrop-blur-xl px-3 py-1.5 rounded-full border ${
+            retrying ? "border-amber-400/30" : "border-white/10"
+          }`}
+        >
+          <CloudUpload size={11} className={retrying ? "text-amber-300" : "text-accent animate-pulse"} />
+          <span className="text-[9px] uppercase tracking-[0.15em] font-bold text-white/70 whitespace-nowrap">{label}</span>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
